@@ -1,5 +1,8 @@
 name = "minimi-context-research-agent"
 compatibility_date = "2026-11-15"
+main = "cloudflare-worker.js"
 
 [assets]
 directory = "./client/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"

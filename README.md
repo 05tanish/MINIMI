@@ -111,7 +111,9 @@ For Neon, use a pooled connection URL at runtime. Ensure pgvector is installed a
 
 ## Deployment
 
-Deploy the client and API behind HTTPS, with the client origin in `CLIENT_ORIGIN`. Set production database and provider credentials in the hosting platform's secret manager. Apply pending migrations with `npm run db:migrate` before deploying code that depends on them. The repository includes a CI workflow and a manual production migration workflow; the latter requires a GitHub `production` environment with `DATABASE_URL_PRODUCTION` configured.
+For Cloudflare, build the client with `npm run build` and deploy the root Wrangler project. Set the Worker variable `API_ORIGIN` to the HTTPS origin of the deployed Express API (for example, `https://api.example.com`, without an `/api` suffix). The Worker forwards `/api/*` requests to that service while keeping the browser on one origin, so session cookies work. Set the API's `CLIENT_ORIGIN` to the Cloudflare site origin. If `API_ORIGIN` is missing, API requests return a JSON 503 explaining the configuration issue.
+
+Set production database and provider credentials in the API hosting platform's secret manager. Apply pending migrations with `npm run db:migrate` before deploying code that depends on them. The repository includes a CI workflow and a manual production migration workflow; the latter requires a GitHub `production` environment with `DATABASE_URL_PRODUCTION` configured.
 
 Keep the audio worker on a private network, with durable Redis and audio storage configured for the deployment. Configure `TRUST_PROXY=true` only when the API runs behind a trusted proxy. See [DESIGN.md](./DESIGN.md) for security and scaling notes.
 
