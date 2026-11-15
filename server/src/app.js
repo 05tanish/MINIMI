@@ -12,6 +12,9 @@ import { errorHandler } from './middleware/errors.js';
 import { authenticate, rateLimitRequest, verifyOrigin } from './middleware/security.js';
 import { authRouter } from './modules/auth/routes.js';
 import { getMetrics, observeHttp } from './infrastructure/metrics.js';
+import { voiceRouter } from './modules/voice/routes.js';
+import { audioProcessingRouter } from './modules/audio-processing/routes.js';
+import { preferencesRouter } from './modules/preferences/routes.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -27,7 +30,16 @@ app.use((req, res, next) => {
 app.use('/api', verifyOrigin, rateLimitRequest);
 app.use('/api', express.json({ limit: env.MAX_REQUEST_BYTES }));
 app.use('/api/auth', authRouter);
+app.get('/api/v1/health', async (_req, res) => {
+  let database = 'not_configured';
+  if (prisma) { try { await prisma.$queryRaw`SELECT 1`; database = 'ready'; } catch { database = 'unavailable'; } }
+  res.status(database === 'unavailable' ? 503 : 200).json({ success: true, data: { application: 'ready', database }, error: null });
+});
 app.use('/api', authenticate);
+app.use('/api/preferences', preferencesRouter);
+app.use('/api/v1/preferences', preferencesRouter);
+app.use('/api/v1', voiceRouter);
+app.use('/api/v1', audioProcessingRouter);
 
 app.get('/api/metrics', (_req, res) => res.json({ success: true, data: getMetrics(), error: null }));
 

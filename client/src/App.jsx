@@ -1,18 +1,75 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import AudioUpload from './components/jobs/AudioUpload.jsx';
+import { SpeakAnswer } from './components/voice/AudioPlayer.jsx';
+import InteractionModeSwitcher from './components/voice/InteractionModeSwitcher.jsx';
+import VoiceModeInterface from './components/voice/VoiceModeInterface.jsx';
 
-const stages = { understanding: 'Understanding your question', memory: 'Retrieving conversation context', search: 'Searching the web', compare: 'Comparing evidence', answer: 'Preparing your answer' };
-const apiFetch = (url, options = {}) => fetch(url, { credentials: 'include', ...options, headers: { ...(options.headers ?? {}) } });
+const stages = {
+  understanding: 'Understanding your question',
+  memory: 'Retrieving conversation context',
+  search: 'Searching the web',
+  compare: 'Comparing evidence',
+  answer: 'Preparing your answer'
+};
 
+const LS_MODE_KEY = 'minimi_interaction_mode';
+const LS_VOICE_KEY = 'minimi_voice_settings';
+
+const DEFAULT_VOICE_SETTINGS = { voice: 'Shivani', language: 'indic-auto', autoPlay: true };
+
+const apiFetch = (url, options = {}) =>
+  fetch(url, { credentials: 'include', ...options, headers: { ...(options.headers ?? {}) } });
+
+/* ─────────────────────── Auth Screen ─────────────────────── */
 function AuthScreen({ onAuthenticated }) {
-  const [mode, setMode] = useState('login'); const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
   async function submit(event) {
-    event.preventDefault(); setBusy(true); setError('');
-    try { const response = await apiFetch(`/api/auth/${mode === 'signup' ? 'signup' : 'login'}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error?.message ?? 'Unable to sign in.'); onAuthenticated(result.data.user); }
-    catch (e) { setError(e.message); } finally { setBusy(false); }
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const response = await apiFetch(`/api/auth/${mode === 'signup' ? 'signup' : 'login'}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message ?? 'Unable to sign in.');
+      onAuthenticated(result.data.user);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
   }
-  return <main className="auth-shell"><form className="auth-card" onSubmit={submit}><div className="brand"><div className="mark">m</div><div><b>minimi</b><small>RESEARCH</small></div></div><h1>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1><p>Your conversation research stays private to your account.</p><label>Email<input autoComplete="email" type="email" required maxLength="254" value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>Password<input autoComplete={mode === 'login' ? 'current-password' : 'new-password'} type="password" required minLength="10" maxLength="128" value={password} onChange={(e) => setPassword(e.target.value)} /></label>{error && <div className="error">{error}</div>}<button className="auth-submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}</button><button className="auth-switch" type="button" onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); }}>{mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}</button></form></main>;
+
+  return (
+    <main className="auth-shell">
+      <form className="auth-card" onSubmit={submit}>
+        <div className="brand">
+          <div className="mark">m</div>
+          <div><b>minimi</b><small>RESEARCH</small></div>
+        </div>
+        <h1>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
+        <p>Your conversation research stays private to your account.</p>
+        <label>Email<input autoComplete="email" type="email" required maxLength="254" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+        <label>Password<input autoComplete={mode === 'login' ? 'current-password' : 'new-password'} type="password" required minLength="10" maxLength="128" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        {error && <div className="error">{error}</div>}
+        <button className="auth-submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}</button>
+        <button className="auth-switch" type="button" onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); }}>
+          {mode === 'login' ? 'New here? Create an account' : 'Already have an account? Sign in'}
+        </button>
+      </form>
+    </main>
+  );
 }
 
+/* ─────────────────────── Markdown renderer ─────────────────────── */
 function renderText(text) {
   const inline = (line, keyPrefix) => line.split(/(\[S\d+\]|\*\*[^*]+\*\*|\*[^*]+\*)/g).map((part, i) => {
     if (/^\[S\d+\]$/.test(part)) return <sup className="cite" key={`${keyPrefix}-${i}`}>{part}</sup>;
@@ -20,13 +77,16 @@ function renderText(text) {
     if (/^\*[^*]+\*$/.test(part)) return <em key={`${keyPrefix}-${i}`}>{part.slice(1, -1)}</em>;
     return <span key={`${keyPrefix}-${i}`}>{part}</span>;
   });
-  const lines = text.split('\n'); const output = [];
+  const lines = text.split('\n');
+  const output = [];
   const cells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
   const isTableRule = (line) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line.trim());
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (i + 1 < lines.length && line.includes('|') && isTableRule(lines[i + 1])) {
-      const headers = cells(line); const rows = []; i += 2;
+      const headers = cells(line);
+      const rows = [];
+      i += 2;
       while (i < lines.length && lines[i].includes('|') && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
       i--;
       output.push(<div className="answer-table-wrap" key={`table-${i}`}><table className="answer-table"><thead><tr>{headers.map((cell, j) => <th key={j}>{inline(cell, `th-${i}-${j}`)}</th>)}</tr></thead><tbody>{rows.map((row, j) => <tr key={j}>{headers.map((_, k) => <td key={k}>{inline(row[k] ?? '', `td-${i}-${j}-${k}`)}</td>)}</tr>)}</tbody></table></div>);
@@ -42,77 +102,444 @@ function renderText(text) {
   return output;
 }
 
-const diffStatus = { changed: { label: 'CHANGED', cls: 'd-changed' }, unchanged: { label: 'UNCHANGED', cls: 'd-unchanged' }, new_finding: { label: 'NEW', cls: 'd-new' }, no_current_evidence: { label: 'NO CURRENT DATA', cls: 'd-missing' } };
+/* ─────────────────────── Diff table ─────────────────────── */
+const diffStatus = {
+  changed: { label: 'CHANGED', cls: 'd-changed' },
+  unchanged: { label: 'UNCHANGED', cls: 'd-unchanged' },
+  new_finding: { label: 'NEW', cls: 'd-new' },
+  no_current_evidence: { label: 'NO CURRENT DATA', cls: 'd-missing' }
+};
 
 function DiffTable({ entries }) {
-  return <div className="diff-panel"><div className="diff-title">EVIDENCE COMPARISON</div><table className="diff-table"><thead><tr><th>Entity</th><th>Attribute</th><th>Historical</th><th>Current</th><th>Status</th></tr></thead><tbody>{entries.map((e, i) => { const s = diffStatus[e.status] ?? { label: e.status, cls: '' }; return <tr key={i} className={s.cls}><td>{e.entity}</td><td>{e.attribute}</td><td>{e.historicalValue ?? '—'}</td><td>{e.currentValue ?? '—'}</td><td><span className="diff-badge">{s.label}</span></td></tr>; })}</tbody></table></div>;
+  return (
+    <div className="diff-panel">
+      <div className="diff-title">EVIDENCE COMPARISON</div>
+      <table className="diff-table">
+        <thead><tr><th>Entity</th><th>Attribute</th><th>Historical</th><th>Current</th><th>Status</th></tr></thead>
+        <tbody>
+          {entries.map((e, i) => {
+            const s = diffStatus[e.status] ?? { label: e.status, cls: '' };
+            return <tr key={i} className={s.cls}><td>{e.entity}</td><td>{e.attribute}</td><td>{e.historicalValue ?? '—'}</td><td>{e.currentValue ?? '—'}</td><td><span className="diff-badge">{s.label}</span></td></tr>;
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
+/* ─────────────────────── Findings panel ─────────────────────── */
 function FindingsPanel({ findings }) {
   if (!findings.length) return null;
-  return <div className="findings">{findings.map((f, i) => { if (f.findingsType === 'memory') return <div className="finding-group" key={i}><div className="finding-label">📖 MEMORY</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.topic} {item.date && <span className="finding-date">· {new Date(item.date).toLocaleDateString()}</span>}</div>)}</div>; if (f.findingsType === 'search') return <div className="finding-group" key={i}><div className="finding-label">🔍 WEB</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.title}{item.hasContent && <span className="finding-badge">full page</span>}</div>)}</div>; if (f.findingsType === 'diff') return <div className="finding-group" key={i}><div className="finding-label">📊 DIFF</div>{f.summary && <div className="finding-summary">{f.summary}</div>}<DiffTable entries={f.items} /></div>; return null; })}</div>;
+  return (
+    <div className="findings">
+      {findings.map((f, i) => {
+        if (f.findingsType === 'memory') return <div className="finding-group" key={i}><div className="finding-label">📖 MEMORY</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.topic} {item.date && <span className="finding-date">· {new Date(item.date).toLocaleDateString()}</span>}</div>)}</div>;
+        if (f.findingsType === 'search') return <div className="finding-group" key={i}><div className="finding-label">🔍 WEB</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.title}{item.hasContent && <span className="finding-badge">full page</span>}</div>)}</div>;
+        if (f.findingsType === 'diff') return <div className="finding-group" key={i}><div className="finding-label">📊 DIFF</div>{f.summary && <div className="finding-summary">{f.summary}</div>}<DiffTable entries={f.items} /></div>;
+        return null;
+      })}
+    </div>
+  );
 }
 
+/* ─────────────────────── Main App ─────────────────────── */
 export default function App() {
   const [currentUser, setCurrentUser] = useState(undefined);
-  const [conversations, setConversations] = useState([]); const [id, setId] = useState(null); const [messages, setMessages] = useState([]);
+  const [conversations, setConversations] = useState([]);
+  const [id, setId] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
-  const [input, setInput] = useState(''); const [status, setStatus] = useState(''); const [statusDetail, setStatusDetail] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const [input, setInput] = useState('');
+  const [status, setStatus] = useState('');
+  const [statusDetail, setStatusDetail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   const [findings, setFindings] = useState([]);
-  const abort = useRef(null); const bottom = useRef(null); const requestKey = useRef(null); const lastSequence = useRef(0);
-  async function loadList() { try { const r = await apiFetch('/api/conversations'); const j = await r.json(); if (j.success) setConversations(j.data.items); } catch {} }
-  async function loadConversation(cid) { const r = await apiFetch(`/api/conversations/${cid}`); const j = await r.json(); if (j.success) { setId(cid); setMessages(j.data.messages.map((m) => ({ ...m, sources: m.sources ?? [], diff: [], searchRounds: 0 }))); setError(''); } }
+
+  // ── Interaction mode & voice settings state ──
+  const [interactionMode, setInteractionMode] = useState('voice'); // default → voice
+  const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+
+  const abort = useRef(null);
+  const bottom = useRef(null);
+  const requestKey = useRef(null);
+  const lastSequence = useRef(0);
+
+  /* ── Load list & scroll ── */
+  async function loadList() {
+    try {
+      const r = await apiFetch('/api/conversations');
+      const j = await r.json();
+      if (j.success) setConversations(j.data.items);
+    } catch {}
+  }
+
+  async function loadConversation(cid) {
+    const r = await apiFetch(`/api/conversations/${cid}`);
+    const j = await r.json();
+    if (j.success) {
+      setId(cid);
+      setMessages(j.data.messages.map((m) => ({ ...m, sources: m.sources ?? [], diff: [], searchRounds: 0 })));
+      setError('');
+    }
+  }
+
   async function deleteConversation(conversation) {
-    if (!window.confirm(`Delete “${conversation.title}”? Its messages, saved sources, and memory will be permanently removed.`)) return;
-    setDeletingId(conversation.id); setError('');
+    if (!window.confirm(`Delete "${conversation.title}"? Its messages, saved sources, and memory will be permanently removed.`)) return;
+    setDeletingId(conversation.id);
+    setError('');
     try {
       const response = await apiFetch(`/api/conversations/${conversation.id}`, { method: 'DELETE' });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error?.message ?? 'Unable to delete conversation.');
       setConversations((items) => items.filter((item) => item.id !== conversation.id));
       if (id === conversation.id) { setId(null); setMessages([]); setFindings([]); }
-    } catch (e) { setError(e.message); }
-    finally { setDeletingId(null); }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDeletingId(null);
+    }
   }
-  useEffect(() => { apiFetch('/api/auth/me').then((r) => r.ok ? r.json() : null).then((j) => setCurrentUser(j?.data?.user ?? null)).catch(() => setCurrentUser(null)); }, []);
-  useEffect(() => { if (currentUser) loadList(); }, [currentUser]); useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, status, findings]);
+
+  /* ── Auth check ── */
+  useEffect(() => {
+    apiFetch('/api/auth/me')
+      .then((r) => r.ok ? r.json() : null)
+      .then((j) => setCurrentUser(j?.data?.user ?? null))
+      .catch(() => setCurrentUser(null));
+  }, []);
+
+  /* ── Load conversations once authenticated ── */
+  useEffect(() => { if (currentUser) loadList(); }, [currentUser]);
+
+  /* ── Auto-scroll ── */
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, status, findings]);
+
+  /* ── Load preferences: server first, localStorage fallback ── */
+  useEffect(() => {
+    if (!currentUser) {
+      // Not authenticated – use localStorage only
+      const savedMode = localStorage.getItem(LS_MODE_KEY);
+      const savedVoice = localStorage.getItem(LS_VOICE_KEY);
+      if (savedMode === 'text' || savedMode === 'voice') setInteractionMode(savedMode);
+      if (savedVoice) {
+        try { setVoiceSettings({ ...DEFAULT_VOICE_SETTINGS, ...JSON.parse(savedVoice) }); } catch {}
+      }
+      setPrefsLoaded(true);
+      return;
+    }
+
+    apiFetch('/api/preferences/interaction-mode')
+      .then((r) => r.ok ? r.json() : null)
+      .then((j) => {
+        if (j?.success && j.data) {
+          const { interactionMode: mode, voice, language, autoPlay } = j.data;
+          if (mode === 'text' || mode === 'voice') setInteractionMode(mode);
+          setVoiceSettings({
+            voice: voice || DEFAULT_VOICE_SETTINGS.voice,
+            language: language || DEFAULT_VOICE_SETTINGS.language,
+            autoPlay: autoPlay ?? DEFAULT_VOICE_SETTINGS.autoPlay
+          });
+        } else {
+          // Fallback to localStorage
+          const savedMode = localStorage.getItem(LS_MODE_KEY);
+          if (savedMode === 'text' || savedMode === 'voice') setInteractionMode(savedMode);
+        }
+      })
+      .catch(() => {
+        const savedMode = localStorage.getItem(LS_MODE_KEY);
+        if (savedMode === 'text' || savedMode === 'voice') setInteractionMode(savedMode);
+      })
+      .finally(() => setPrefsLoaded(true));
+  }, [currentUser]);
+
+  /* ── Save mode preference (debounced via useCallback) ── */
+  const saveMode = useCallback((newMode, newVoice) => {
+    localStorage.setItem(LS_MODE_KEY, newMode);
+    if (newVoice) localStorage.setItem(LS_VOICE_KEY, JSON.stringify(newVoice));
+    if (currentUser) {
+      apiFetch('/api/preferences/interaction-mode', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ interactionMode: newMode, ...(newVoice || {}) })
+      }).catch(() => {});
+    }
+  }, [currentUser]);
+
+  /* ── Mode switcher handler ── */
+  function handleModeChange(newMode) {
+    if (newMode === interactionMode) return;
+    // If currently recording, the VoiceModeInterface handles its own teardown
+    // before we switch; we just update state.
+    setInteractionMode(newMode);
+    saveMode(newMode, voiceSettings);
+  }
+
+  /* ── Voice settings update ── */
+  function handleVoiceSettingsUpdate(newSettings) {
+    setVoiceSettings(newSettings);
+    saveMode(interactionMode, newSettings);
+  }
+
+  /* ── Core submit (shared by text composer AND voice transcript) ── */
   async function submit(event, reuseRequestKey = false, overrideMessage = '') {
-    event?.preventDefault(); if (!(overrideMessage || input.trim()) || busy) return;
-    if (!reuseRequestKey || !requestKey.current) { requestKey.current = crypto.randomUUID(); lastSequence.current = 0; }
-    const message = (overrideMessage || input).trim(); setInput(''); setError(''); setBusy(true); setStatus(stages.understanding); setStatusDetail(''); setFindings([]);
-    setMessages((old) => { const base = overrideMessage && old.at(-1)?.role === 'user' && old.at(-1)?.content === message ? old.slice(0, -1) : old; return [...base, { role: 'user', content: message, createdAt: new Date().toISOString() }, { role: 'assistant', content: '', sources: [], diff: [], searchRounds: 0, streaming: true }]; });
-    const controller = new AbortController(); abort.current = controller;
+    event?.preventDefault();
+    if (!(overrideMessage || input.trim()) || busy) return;
+    if (!reuseRequestKey || !requestKey.current) {
+      requestKey.current = crypto.randomUUID();
+      lastSequence.current = 0;
+    }
+    const message = (overrideMessage || input).trim();
+    setInput('');
+    setError('');
+    setBusy(true);
+    setStatus(stages.understanding);
+    setStatusDetail('');
+    setFindings([]);
+
+    setMessages((old) => {
+      const base = overrideMessage && old.at(-1)?.role === 'user' && old.at(-1)?.content === message
+        ? old.slice(0, -1)
+        : old;
+      return [
+        ...base,
+        { role: 'user', content: message, createdAt: new Date().toISOString() },
+        { role: 'assistant', content: '', sources: [], diff: [], searchRounds: 0, streaming: true }
+      ];
+    });
+
+    const controller = new AbortController();
+    abort.current = controller;
+
     try {
-      const response = await apiFetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': requestKey.current, 'x-after-sequence': String(lastSequence.current) }, body: JSON.stringify({ conversationId: id ?? undefined, message }), signal: controller.signal });
-      if (!response.ok) { const result = await response.json(); throw new Error(result.error?.message ?? 'Request failed'); }
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
-      while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const events = buffer.split('\n\n'); buffer = events.pop() ?? ''; for (const raw of events) {
-        const eventId = raw.split('\n').find((x) => x.startsWith('id: ')); if (eventId) lastSequence.current = Number(eventId.slice(4)) || lastSequence.current;
-        const line = raw.split('\n').find((x) => x.startsWith('data: ')); if (!line) continue; const event = JSON.parse(line.slice(6));
-        if (event.type === 'conversation') setId(event.conversationId);
-        if (event.type === 'progress') { setStatus(stages[event.stage] ?? 'Working'); setStatusDetail(event.detail ?? ''); }
-        if (event.type === 'findings') setFindings((old) => [...old, event]);
-        if (event.type === 'delta') setMessages((old) => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content + event.text } : m));
-        if (event.type === 'done') { requestKey.current = null; lastSequence.current = 0; setMessages((old) => old.map((m, i) => i === old.length - 1 ? { ...m, content: event.answer, sources: event.sources, diff: event.diff ?? [], diffSummary: event.diffSummary, searchRounds: event.searchRounds ?? 0, streaming: false } : m)); }
-        if (event.type === 'error') throw new Error(event.message);
-      } }
-      setStatus(''); setStatusDetail(''); setFindings([]); await loadList();
-    } catch (e) { setError(e.name === 'AbortError' ? 'Request cancelled.' : e.message); setMessages((old) => old.filter((m) => !m.streaming)); }
-    finally { setBusy(false); setStatus(''); setStatusDetail(''); abort.current = null; }
+      const response = await apiFetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'idempotency-key': requestKey.current,
+          'x-after-sequence': String(lastSequence.current)
+        },
+        body: JSON.stringify({ conversationId: id ?? undefined, message }),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error?.message ?? 'Request failed');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() ?? '';
+
+        for (const raw of events) {
+          const eventId = raw.split('\n').find((x) => x.startsWith('id: '));
+          if (eventId) lastSequence.current = Number(eventId.slice(4)) || lastSequence.current;
+          const line = raw.split('\n').find((x) => x.startsWith('data: '));
+          if (!line) continue;
+          const event = JSON.parse(line.slice(6));
+
+          if (event.type === 'conversation') setId(event.conversationId);
+          if (event.type === 'progress') { setStatus(stages[event.stage] ?? 'Working'); setStatusDetail(event.detail ?? ''); }
+          if (event.type === 'findings') setFindings((old) => [...old, event]);
+          if (event.type === 'delta') setMessages((old) => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content + event.text } : m));
+          if (event.type === 'done') {
+            requestKey.current = null;
+            lastSequence.current = 0;
+            setMessages((old) => old.map((m, i) => i === old.length - 1
+              ? { ...m, content: event.answer, sources: event.sources, diff: event.diff ?? [], diffSummary: event.diffSummary, searchRounds: event.searchRounds ?? 0, streaming: false }
+              : m
+            ));
+          }
+          if (event.type === 'error') throw new Error(event.message);
+        }
+      }
+
+      setStatus('');
+      setStatusDetail('');
+      setFindings([]);
+      await loadList();
+    } catch (e) {
+      setError(e.name === 'AbortError' ? 'Request cancelled.' : e.message);
+      setMessages((old) => old.filter((m) => !m.streaming));
+    } finally {
+      setBusy(false);
+      setStatus('');
+      setStatusDetail('');
+      abort.current = null;
+    }
   }
-  if (currentUser === undefined) return <main className="auth-shell"><div className="auth-card">Checking your session…</div></main>;
+
+  /* ── Last assistant message for VoiceModeInterface auto-TTS ── */
+  const lastAssistantMessage = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') return messages[i];
+    }
+    return null;
+  })();
+
+  /* ── Loading state ── */
+  if (currentUser === undefined) {
+    return <main className="auth-shell"><div className="auth-card">Checking your session…</div></main>;
+  }
   if (!currentUser) return <AuthScreen onAuthenticated={setCurrentUser} />;
-  return <div className="shell">
-    <aside className="sidebar"><div className="brand"><div className="mark">m</div><div><b>minimi</b><small>RESEARCH</small></div></div><button className="new-chat" onClick={() => { setId(null); setMessages([]); setError(''); }}>＋ <span>New conversation</span></button><div className="side-label">RECENT</div><nav>{conversations.map((c) => <div className={`conversation-row ${id === c.id ? 'active' : ''}`} key={c.id}><button className="conversation" onClick={() => loadConversation(c.id)} title={c.title}>{c.title}</button><button className="conversation-delete" disabled={deletingId === c.id} onClick={() => deleteConversation(c)} aria-label={`Delete ${c.title}`} title="Delete conversation">{deletingId === c.id ? '…' : '×'}</button></div>)}</nav><div className="side-footer"><span className="dot"/> {currentUser.email}<button className="auth-switch" onClick={async () => { await apiFetch('/api/auth/logout', { method: 'POST' }); setCurrentUser(null); setConversations([]); setMessages([]); setId(null); }}>Sign out</button></div></aside>
-    <main className="main"><header className="topbar"><div className="mobile-brand">minimi <span>research</span></div><span className="connection"><i/> Private workspace</span></header>
-      <section className="thread">
-        {messages.length === 0 ? <div className="welcome"><div className="welcome-icon">✳</div><p className="eyebrow">YOUR CONVERSATION, WITH CONTEXT</p><h1>Research that remembers<br/>what matters.</h1><p className="subhead">Ask about past discussions, get current answers, and see how the evidence changed.</p><div className="suggestions"><button onClick={() => setInput('What did I ask you last week?')}>↗ &nbsp;What did I ask you last week?</button><button onClick={() => setInput('Has the pricing we discussed changed since?')}>↗ &nbsp;Check a price against our discussion</button><button onClick={() => setInput('Find the latest release notes for the product we discussed')}>↗ &nbsp;Find recent product updates</button></div></div> : <div className="messages">{messages.map((m, i) => <article className={`message ${m.role}`} key={i}><div className="avatar">{m.role === 'user' ? 'Y' : '✳'}</div><div className="bubble"><div className="role-label">{m.role === 'user' ? 'YOU' : 'MINIMI'}</div><div className="content">{renderText(m.content)}{m.streaming && <span className="cursor"/>}</div>{m.diff?.length > 0 && <DiffTable entries={m.diff} />}{m.sources?.length > 0 && <div className="sources"><div className="sources-title">SOURCES{m.searchRounds > 1 && <span className="rounds-badge">· {m.searchRounds} search rounds</span>}</div>{m.sources.map((s) => <a href={s.url} target="_blank" rel="noreferrer" key={s.id}><span className="source-id">{s.id}</span><span><b>{s.title}</b><small>{(() => { try { return new URL(s.url).hostname; } catch { return s.url; } })()}</small></span><span className="external">↗</span></a>)}</div>}</div></article>)}</div>}
-        {status && <div className="progress"><span className="spinner"/>{status}{statusDetail && <span className="progress-detail">{statusDetail}</span>}</div>}
-        {busy && findings.length > 0 && <FindingsPanel findings={findings} />}
-        {error && <div className="error"><span>{error}</span><button onClick={() => { const previous = messages.filter((m) => m.role === 'user').at(-1)?.content ?? ''; setError(''); void submit(undefined, true, previous); }}>Retry</button></div>}<div ref={bottom}/>
-      </section>
-      <form className="composer" onSubmit={submit}><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(e); } }} placeholder="Ask about a past conversation or research something new…" rows="1"/><div className="composer-bottom"><span>Enter to send · Shift + Enter for a new line</span><button type="submit" disabled={busy || !input.trim()} aria-label="Send message">{busy ? '…' : '↑'}</button></div></form>
-      <footer className="disclaimer">Answers are grounded in retrieved conversations and cited web sources.</footer>
-    </main>
-  </div>;
+
+  /* ── Main layout ── */
+  return (
+    <div className="shell">
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="mark">m</div>
+          <div><b>minimi</b><small>RESEARCH</small></div>
+        </div>
+        <button className="new-chat" onClick={() => { setId(null); setMessages([]); setError(''); }}>
+          ＋ <span>New conversation</span>
+        </button>
+        <div className="side-label">RECENT</div>
+        <nav>
+          {conversations.map((c) => (
+            <div className={`conversation-row ${id === c.id ? 'active' : ''}`} key={c.id}>
+              <button className="conversation" onClick={() => loadConversation(c.id)} title={c.title}>{c.title}</button>
+              <button className="conversation-delete" disabled={deletingId === c.id} onClick={() => deleteConversation(c)} aria-label={`Delete ${c.title}`} title="Delete conversation">
+                {deletingId === c.id ? '…' : '×'}
+              </button>
+            </div>
+          ))}
+        </nav>
+        <div className="side-footer">
+          <span className="dot" /> {currentUser.email}
+          <button className="auth-switch" onClick={async () => {
+            await apiFetch('/api/auth/logout', { method: 'POST' });
+            setCurrentUser(null);
+            setConversations([]);
+            setMessages([]);
+            setId(null);
+          }}>Sign out</button>
+        </div>
+      </aside>
+
+      {/* Main content */}
+      <main className="main">
+        {/* Top bar with mode switcher */}
+        <header className="topbar">
+          <div className="mobile-brand">minimi <span>research</span></div>
+          {prefsLoaded && (
+            <InteractionModeSwitcher
+              mode={interactionMode}
+              onModeChange={handleModeChange}
+              disabled={busy}
+            />
+          )}
+          <span className="connection"><i /> Private workspace</span>
+        </header>
+
+        {/* ══════════════ VOICE MODE ══════════════ */}
+        {interactionMode === 'voice' && prefsLoaded && (
+          <div className="voice-mode-wrapper">
+            {/* Voice interaction surface */}
+            <VoiceModeInterface
+              onSendMessage={(text) => void submit(undefined, false, text)}
+              busy={busy}
+              status={status}
+              statusDetail={statusDetail}
+              lastAssistantMessage={lastAssistantMessage}
+              messages={messages}
+              error={error}
+              onRetry={() => { const prev = messages.filter((m) => m.role === 'user').at(-1)?.content ?? ''; setError(''); void submit(undefined, true, prev); }}
+              onSwitchToText={() => handleModeChange('text')}
+              voiceSettings={voiceSettings}
+              onUpdateVoiceSettings={handleVoiceSettingsUpdate}
+            />
+          </div>
+        )}
+
+        {/* ══════════════ TEXT MODE ══════════════ */}
+        {interactionMode === 'text' && prefsLoaded && (
+          <>
+            <section className="thread">
+              {messages.length === 0 ? (
+                <div className="welcome">
+                  <div className="welcome-icon">✳</div>
+                  <p className="eyebrow">YOUR CONVERSATION, WITH CONTEXT</p>
+                  <h1>Research that remembers<br />what matters.</h1>
+                  <p className="subhead">Ask about past discussions, get current answers, and see how the evidence changed.</p>
+                  <div className="suggestions">
+                    <button onClick={() => setInput('What did I ask you last week?')}>↗ &nbsp;What did I ask you last week?</button>
+                    <button onClick={() => setInput('Has the pricing we discussed changed since?')}>↗ &nbsp;Check a price against our discussion</button>
+                    <button onClick={() => setInput('Find the latest release notes for the product we discussed')}>↗ &nbsp;Find recent product updates</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="messages">
+                  {messages.map((m, i) => (
+                    <article className={`message ${m.role}`} key={i}>
+                      <div className="avatar">{m.role === 'user' ? 'Y' : '✳'}</div>
+                      <div className="bubble">
+                        <div className="role-label">{m.role === 'user' ? 'YOU' : 'MINIMI'}</div>
+                        <div className="content">{renderText(m.content)}{m.streaming && <span className="cursor" />}</div>
+                        {/* Optional "Listen" button in text mode — uses Gnani Timbre */}
+                        {m.role === 'assistant' && !m.streaming && m.content && <SpeakAnswer text={m.content} />}
+                        {m.diff?.length > 0 && <DiffTable entries={m.diff} />}
+                        {m.sources?.length > 0 && (
+                          <div className="sources">
+                            <div className="sources-title">SOURCES{m.searchRounds > 1 && <span className="rounds-badge">· {m.searchRounds} search rounds</span>}</div>
+                            {m.sources.map((s) => (
+                              <a href={s.url} target="_blank" rel="noreferrer" key={s.id}>
+                                <span className="source-id">{s.id}</span>
+                                <span><b>{s.title}</b><small>{(() => { try { return new URL(s.url).hostname; } catch { return s.url; } })()}</small></span>
+                                <span className="external">↗</span>
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+              {status && <div className="progress"><span className="spinner" />{status}{statusDetail && <span className="progress-detail">{statusDetail}</span>}</div>}
+              {busy && findings.length > 0 && <FindingsPanel findings={findings} />}
+              {error && (
+                <div className="error">
+                  <span>{error}</span>
+                  <button onClick={() => { const prev = messages.filter((m) => m.role === 'user').at(-1)?.content ?? ''; setError(''); void submit(undefined, true, prev); }}>Retry</button>
+                </div>
+              )}
+              <div ref={bottom} />
+            </section>
+
+            {/* Text composer */}
+            <form className="composer" onSubmit={submit}>
+              <details style={{ marginBottom: 8 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 12, color: '#667085' }}>Speak or upload a recording</summary>
+                <AudioUpload conversationId={id} onTranscript={(text) => setInput(text)} onError={setError} />
+              </details>
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(e); } }}
+                placeholder="Ask about a past conversation or research something new…"
+                rows="1"
+              />
+              <div className="composer-bottom">
+                <span>Enter to send · Shift + Enter for a new line</span>
+                <button type="submit" disabled={busy || !input.trim()} aria-label="Send message">{busy ? '…' : '↑'}</button>
+              </div>
+            </form>
+
+            <footer className="disclaimer">Answers are grounded in retrieved conversations and cited web sources.</footer>
+          </>
+        )}
+      </main>
+    </div>
+  );
 }

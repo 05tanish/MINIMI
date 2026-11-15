@@ -1,5 +1,13 @@
 # Dependencies
 node_modules/
+worker/.venv/
+
+# Local app and Python runtime state
+/user-preferences.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
 
 # Build output and generated files
 client/dist/

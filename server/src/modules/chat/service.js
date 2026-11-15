@@ -206,6 +206,26 @@ async function executeChatTurn({ turn, onEvent }) {
   if (routing.memory && !memory.chunks.length) notices.push('I could not retrieve relevant earlier conversation context, so I cannot verify what we discussed before.');
   if (notices.length) { answer += `\n\n${notices.join('\n')}`; onEvent({ type: 'delta', text: `\n\n${notices.join('\n')}` }); }
 
+  // Pre-resolve entities outside transaction to prevent transaction timeouts on pooled database connections
+  const entityMap = new Map();
+  const allClaims = [...(claims.memoryClaims || []), ...(claims.webClaims || [])];
+  for (const claim of allClaims) {
+    const entityName = claim.entity?.trim();
+    if (!entityName || entityName === '(unknown)') continue;
+    const entityKey = normalizeEntity(entityName);
+    if (!entityKey || entityMap.has(entityKey)) continue;
+    try {
+      const entity = await prisma.entity.upsert({
+        where: { normalizedName: entityKey },
+        create: { name: entityName, normalizedName: entityKey, type: 'research' },
+        update: {}
+      });
+      entityMap.set(entityKey, entity);
+    } catch (err) {
+      logger.warn({ code: err.code, entityKey }, 'Entity pre-upsert skipped');
+    }
+  }
+
   // 9. Persist assistant message + sources
   const assistant = await prisma.$transaction(async (tx) => {
     const row = await tx.message.create({ data: { conversationId: conversation.id, role: 'assistant', content: answer } });
@@ -218,7 +238,7 @@ async function executeChatTurn({ turn, onEvent }) {
     for (const claim of claims.memoryClaims) {
       const entityName = claim.entity?.trim(); if (!entityName || entityName === '(unknown)') continue;
       const entityKey = normalizeEntity(entityName); if (!entityKey) continue;
-      const entity = await tx.entity.upsert({ where: { normalizedName: entityKey }, create: { name: entityName, normalizedName: entityKey, type: 'research' }, update: {} });
+      const entity = entityMap.get(entityKey); if (!entity) continue;
       const conversationKey = claim.conversationId ?? conversation.id;
       const evidenceKey = crypto.createHash('sha256').update([userId, conversationKey, 'memory', claim.messageId ?? '', entityKey, claim.attribute, claim.value.toLowerCase()].join('|')).digest('hex');
       persistedClaims.push({ userId, conversationId: conversationKey, entityId: entity.id, attribute: claim.attribute, value: claim.value, validAt: claim.date ? new Date(claim.date) : null, messageId: claim.messageId, sourceId: null, origin: 'memory', evidenceKey });
@@ -226,7 +246,7 @@ async function executeChatTurn({ turn, onEvent }) {
     for (const claim of claims.webClaims) {
       const entityName = claim.entity?.trim(); if (!entityName || entityName === '(unknown)') continue;
       const entityKey = normalizeEntity(entityName); if (!entityKey) continue;
-      const entity = await tx.entity.upsert({ where: { normalizedName: entityKey }, create: { name: entityName, normalizedName: entityKey, type: 'research' }, update: {} });
+      const entity = entityMap.get(entityKey); if (!entity) continue;
       const sourceId = sourceIds.get(claim.sourceUrl) ?? null;
       const evidenceKey = crypto.createHash('sha256').update([userId, conversation.id, 'web', sourceId ?? '', entityKey, claim.attribute, claim.value.toLowerCase()].join('|')).digest('hex');
       persistedClaims.push({ userId, conversationId: conversation.id, entityId: entity.id, attribute: claim.attribute, value: claim.value, validAt: claim.date ? new Date(claim.date) : null, messageId: row.id, sourceId, origin: 'web', evidenceKey });
@@ -236,7 +256,7 @@ async function executeChatTurn({ turn, onEvent }) {
     await tx.chatTurn.update({ where: { id: turn.id }, data: { assistantMessageId: row.id, errorCode: null } });
     await tx.outboxEvent.create({ data: { type: 'memory.index', aggregateId: conversation.id, payload: { conversationId: conversation.id, turnId: turn.id } } });
     return row;
-  }, { timeout: 15000 });
+  }, { timeout: 30000, maxWait: 10000 });
 
   onEvent({ type: 'done', conversationId: conversation.id, messageId: assistant.id, answer, sources, retrievalCount: memory.chunks.length, memoryIndexed: false, indexingQueued: true, citationValidation: validateCitations(answer, sources), searchRounds: search.rounds, diff: diff?.entries ?? [], diffSummary: diff?.summary ?? null });
   await onEvent.flush?.();

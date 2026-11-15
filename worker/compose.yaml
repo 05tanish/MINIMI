@@ -1,0 +1,57 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - minimi-voice-redis:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  worker-api:
+    build:
+      context: .
+      args:
+        INSTALL_PYANNOTE: ${INSTALL_PYANNOTE:-false}
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ../.env
+    environment:
+      PYANNOTE_ENABLED: ${PYANNOTE_ENABLED:-false}
+      PYANNOTE_TOKEN: ${PYANNOTE_TOKEN:-}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STORAGE_DIR: /data/audio
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - minimi-voice-audio:/data/audio
+    depends_on:
+      redis:
+        condition: service_healthy
+  celery:
+    build:
+      context: .
+      args:
+        INSTALL_PYANNOTE: ${INSTALL_PYANNOTE:-false}
+    command: ["sh", "-c", "celery -A app.celery_app:celery_app worker --loglevel=INFO --concurrency=${MAX_PARALLEL_AUDIO_TASKS:-3}"]
+    env_file: ../.env
+    environment:
+      PYANNOTE_ENABLED: ${PYANNOTE_ENABLED:-false}
+      PYANNOTE_TOKEN: ${PYANNOTE_TOKEN:-}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STORAGE_DIR: /data/audio
+    volumes:
+      - minimi-voice-audio:/data/audio
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  minimi-voice-redis:
+  minimi-voice-audio:

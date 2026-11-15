@@ -146,3 +146,50 @@ The cooldown is currently process-local. Before scaling the API horizontally, st
 PostgreSQL is authoritative for identity and conversation history. Memory chunks, vectors, and full-text vectors are derived and can be rebuilt. Apply schema changes through additive migrations, back up hosted data, and verify restore procedures. Keep pgvector and full-text retrieval bounded by per-user scope and result limits.
 
 Research is now queued durably and SSE subscribes to persisted turn events. Keep separate limits for concurrent jobs, per-user queue depth, search rounds, extraction count, context tokens, output tokens, and wall time. Production deployments still need queue-depth alerts, worker autoscaling based on backlog, event retention policies, and database backup/restore drills.
+
+## Minimi 2.0 additive implementation map
+
+### Existing architecture audited
+
+The current product is a JavaScript/Express 5 API and React/Vite client using PostgreSQL/pgvector through Prisma. The public API applies Helmet, CORS, request logging, origin/CSRF validation, rate limiting, JSON limits and cookie-session authentication. `POST /api/chat` stores an idempotent chat turn and streams durable SSE events. `processChatTurn` in `server/src/modules/chat/service.js` performs intent analysis, user-scoped hybrid memory retrieval, Tavily search and extraction, claim extraction, temporal diffing, answer generation, citation checks and persistence. `server/src/workers/memory-indexer.js` processes the PostgreSQL outbox for chat work and memory indexing. The React surface is currently a single `client/src/App.jsx` conversation experience. Existing schema/migrations contain accounts, conversations, messages, source/claim/memory models, chat turns/events and outbox work.
+
+### Files and behavior protected from changes
+
+The existing chat/research/RAG/temporal implementations, auth/session flow, existing routes and response contracts, frontend chat workflows, current Prisma models and applied migrations, provider configuration and deployment workflows must continue to behave as they do today. In particular, do not alter `server/src/modules/chat/service.js`, `server/src/modules/retrieval/**`, `server/src/modules/temporal/**`, `server/src/modules/agent/**`, `server/src/modules/auth/**`, `server/src/workers/memory-indexer.js`, existing React component behavior, or existing migration files. `client/src/App.jsx` has only additive imports and mounts for the new voice controls. New routes may be mounted by a small additive registration in `server/src/app.js`; job persistence, if needed, must be introduced with new Prisma model(s) and a new forward-only migration. Add new env names without changing established defaults.
+
+### New components and reuse
+
+Reuse the authenticated Express boundary, Prisma client, logger, existing conversation ownership checks, research endpoints, and configured Gemini/Groq generation path through their public interfaces. Add standalone Gnani Prisma/Timbre/Evon adapters under `server/src/integrations/gnani/`; a voice API module mounted additively in Express; React voice/job components in new directories; and a self-contained `worker/` Python service containing FastAPI, Celery, Redis broker/result backend, FFmpeg/FFprobe validation, asynchronous task modules, and internal shared-secret authentication. Worker jobs store only references/metadata in Redis and persist durable status/results through a job-state adapter; audio bytes remain in configured filesystem/object storage.
+
+### Request lifecycles
+
+Text chat continues through the existing route and agent untouched. Voice chat is a wrapper: authenticated Express accepts/forwards voice input to Prisma, then passes the transcript as a normal message through the existing chat contract; optional speech synthesis runs after text research and may fail independently. Long audio upload creates an owned job record, forwards it to the private worker gateway, and immediately returns its ID. Celery preprocesses and chunks with FFmpeg, dispatches compliant Batch STT requests, reconstructs ordered segments with timestamps, and updates persisted progress. Long TTS is split at paragraph/sentence boundaries, synthesized per chunk, merged when compatible, and exposed as ordered playback artifacts. React polls existing REST APIs at a configurable interval and stops on terminal status.
+
+### API contracts
+
+New authenticated endpoints are additive: `/api/v1/voice/transcribe`, `/api/v1/voice/synthesize`, `/api/v1/voice/chat`, `/api/v1/audio/jobs`, `/api/v1/audio/jobs/:jobId`, `/api/v1/audio/jobs/:jobId/cancel`, and `/api/v1/health/worker`. Responses follow `{ success, data, error }`; all job lookups enforce authenticated ownership. Express-to-worker requests use a private URL and constant-time checked internal secret. The Python service is bound to an internal network and is not a public browser API. Existing `/api/chat` and `/api/conversations` contracts do not change.
+
+### Provider verification and constraints (2026-11-14)
+
+Current official [Prisma v3](https://docs.gnani.ai/api/STT/models/prisma-v3), [Batch STT](https://docs.gnani.ai/api/STTBatch/Introduction), [Timbre REST](https://docs.gnani.ai/api/TTS/tts-inference), [voice catalog](https://docs.gnani.ai/api/TTS/available-voices) and [audio tag](https://docs.gnani.ai/api/TTS/tts-audio-tags) docs specify Prisma v3 short REST as `POST https://api.vachana.ai/stt/v3`, `X-API-Key-ID`, multipart fields `audio_file`, `model=prisma-v3.0`, `language_code=indic-auto` (or up to four supported language codes), `format` (`verbatim`, `transcribe`, `codemix`, `transliterate`) and optional `keyterms`, `topic`, `previous_text`, `speaker_names`. REST is limited to 30 seconds; Batch supports up to 4 hours per file, 100 files per upload job and 10 MB per uploaded file (presigned uploads have a different documented limit), subject to account limits. Timbre v3 REST is `POST https://api.vachana.ai/api/v1/tts/inference`, authenticated with `X-API-Key-ID`; its v3 schema includes `text`, required `model`, required model-specific `voice`, required `language`, optional `speed` and `audio_config`. Timbre v3 offers 13 voices and 10 Indian languages, and documents 13 expressive tags. The docs describe overly long text as a provider failure but do not publish a specific character cap, so 4,000-character worker chunks are an application heuristic. Do not copy the v2.5 example voice or assume any undocumented field. Evon v3.3 hosted inference could not be verified in the publicly available Gnani API docs during this audit; keep its adapter disabled unless an account-specific endpoint/schema and credentials are supplied. Existing Gemini/Groq is labeled as fallback, never as Evon.
+
+### Failure handling and security
+
+Provider adapters classify auth/validation/unsupported-model failures as permanent and mark provider timeouts, 429s and server errors as retryable. The current worker retries network timeouts/connections for transcription; provider HTTP 429/5xx retry policy and a true provider-side idempotency mechanism remain follow-up work. TTS errors do not invalidate completed text research. Long jobs expose partial completion and failed chunk records rather than disguising gaps. Internal worker endpoints require a secret and network isolation. User IDs come from Express authentication, never request payload ownership claims. Validate actual audio via FFprobe after extension/MIME screening; apply configured byte and duration caps; use private temporary files with cleanup. Do not log audio, transcripts, secrets, or full user content.
+
+### Additive database and deployment changes
+
+If database-backed job state is necessary, add a new `AudioJob` model with a new migration; never edit a deployed migration or repurpose chat/outbox rows. Store status, progress, owner/conversation, lifecycle timestamps, redacted error category, and result/storage reference. Redis is the Celery broker and result backend, not the binary store or sole durable source of job ownership. Local development adds Redis and worker services through a separate compose file or optional compose overlay so current deployments remain valid. New deployment configuration is opt-in and does not replace existing workflows.
+
+### Trade-offs and known limits
+
+Gnani account-specific Evon access, rate limits, Batch upload/poll details, exact TTS binary response headers and production storage are not discoverable from the checked-in repository; validate these against the customer account before enabling the corresponding integration. A first additive release can expose sync STT for <=30-second clips and asynchronous batch jobs for longer inputs. Existing chat orchestration remains the source of truth, so voice features must adapt around it rather than fork the research pipeline. Browser polling is adequate for initial progress updates and avoids altering SSE chat behavior.
+
+### Safe implementation sequence
+
+1. Add these architecture boundaries and verify clean worktree state.
+2. Add isolated provider adapters and schema-focused mocked tests.
+3. Add a separate Celery/FastAPI worker and internal auth, then local Redis configuration.
+4. Add only the minimal Express route mounting plus additive job persistence/migration needed for the new endpoints.
+5. Add new React voice/jobs components and wire them into the current UI with additive imports/state only.
+6. Run current regression tests/build and new mocked tests; do not claim real-provider verification without account credentials and executed calls.

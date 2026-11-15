@@ -94,6 +94,36 @@ ${query}`;
   return answer;
 }
 
+export async function generateSpokenAnswer({ answer, question, signal }) {
+  const fallback = answer
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/\[S\d+\]/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/gm, '')
+    .replace(/\|/g, ', ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .slice(0, 2)
+    .join(' ')
+    .slice(0, 420);
+
+  if (!ai) return `${fallback} For full details, switch to Text mode.`;
+  try {
+    const { result } = await withAvailableModel((model, modelSignal) => ai.models.generateContent({
+      model,
+      contents: `Turn this research answer into a concise spoken reply. Answer the question directly in natural conversational language, summarizing only the key result in at most two short sentences. Do not read headings, citations, URLs, lists, or the answer word for word. Preserve names and facts accurately; do not add facts. End with: "If you want the full details, switch to Text mode."\n\nQUESTION:\n${question}\n\nRESEARCH ANSWER:\n${answer}`,
+      config: { abortSignal: modelSignal, maxOutputTokens: 160, ...thinkingConfigFor(model) }
+    }), signal);
+    const spoken = (result.text ?? '').trim().replace(/^\*+|\*+$/g, '');
+    return spoken || `${fallback} For full details, switch to Text mode.`;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    logger.warn({ code: error.code ?? error.name }, 'Spoken answer formatting failed; using concise fallback');
+    return `${fallback} For full details, switch to Text mode.`;
+  }
+}
+
 function fitContextItems(items, tokenBudget, formatter) {
   const output = []; let remaining = tokenBudget;
   for (let index = 0; index < items.length && remaining > 0; index++) {

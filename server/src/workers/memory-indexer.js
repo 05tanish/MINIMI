@@ -44,6 +44,26 @@ async function indexConversation(conversationId, signal) {
       return null;
     })
   }));
+  // Pre-resolve entities outside the transaction to avoid Neon pooled connection timeouts
+  const allEntities = new Map();
+  for (const chunk of [...chunks.filter((item) => existingIds.has(item.id)), ...embedded]) {
+    for (const entity of chunk.entities || []) {
+      const normalizedName = entity.name?.toLowerCase();
+      if (normalizedName && !allEntities.has(normalizedName)) {
+        try {
+          const row = await prisma.entity.upsert({
+            where: { normalizedName },
+            create: { name: entity.name, normalizedName, type: entity.type || 'research' },
+            update: {}
+          });
+          allEntities.set(normalizedName, row);
+        } catch (e) {
+          logger.warn({ code: e.code, normalizedName }, 'Indexer entity pre-upsert skipped');
+        }
+      }
+    }
+  }
+
   await prisma.$transaction(async (tx) => {
     const stale = await tx.memoryChunk.findMany({ where: { conversationId, id: { notIn: ids } }, select: { id: true } });
     if (stale.length) {
@@ -53,10 +73,12 @@ async function indexConversation(conversationId, signal) {
     }
     for (const chunk of [...chunks.filter((item) => existingIds.has(item.id)), ...embedded]) {
       await tx.$executeRaw`INSERT INTO "MemoryChunk" (id, "conversationId", content, topic, entities, metadata, "startAt", "endAt", embedding, "searchVector") VALUES (${chunk.id}, ${conversationId}, ${chunk.content}, ${chunk.topic}, ${JSON.stringify(chunk.entities)}::jsonb, ${JSON.stringify({ messageIds: chunk.messageIds })}::jsonb, ${chunk.startAt}, ${chunk.endAt}, ${chunk.embedding ? `[${chunk.embedding.join(',')}]` : null}::vector, to_tsvector('english', ${chunk.content})) ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, entities = EXCLUDED.entities, metadata = EXCLUDED.metadata, embedding = COALESCE(EXCLUDED.embedding, "MemoryChunk".embedding), "searchVector" = EXCLUDED."searchVector"`;
-      for (const messageId of chunk.messageIds) for (const entity of chunk.entities) {
-        const normalizedName = entity.name.toLowerCase();
-        const entityRow = await tx.entity.upsert({ where: { normalizedName }, create: { name: entity.name, normalizedName, type: entity.type }, update: {} });
-        await tx.entityMention.upsert({ where: { entityId_messageId: { entityId: entityRow.id, messageId } }, create: { entityId: entityRow.id, messageId, conversationId }, update: {} });
+      for (const messageId of chunk.messageIds) for (const entity of chunk.entities || []) {
+        const normalizedName = entity.name?.toLowerCase();
+        const entityRow = allEntities.get(normalizedName);
+        if (entityRow) {
+          await tx.entityMention.upsert({ where: { entityId_messageId: { entityId: entityRow.id, messageId } }, create: { entityId: entityRow.id, messageId, conversationId }, update: {} });
+        }
       }
     }
     // Extractive rolling summary keeps long histories retrievable without an
