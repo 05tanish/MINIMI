@@ -284,6 +284,8 @@ export default function App() {
   const [copiedMessageId, setCopiedMessageId] = useState(null);
   const [conversationError, setConversationError] = useState('');
   const [input, setInput] = useState('');
+  const [imageAttachments, setImageAttachments] = useState([]);
+  const [imageUploading, setImageUploading] = useState(false);
   const [audioToolsOpen, setAudioToolsOpen] = useState(false);
   const [status, setStatus] = useState('');
   const [researchStage, setResearchStage] = useState('');
@@ -303,6 +305,40 @@ export default function App() {
   const composerInput = useRef(null);
   const requestKey = useRef(null);
   const lastSequence = useRef(0);
+  const imageInput = useRef(null);
+  const imageAttachmentsRef = useRef([]);
+  imageAttachmentsRef.current = imageAttachments;
+
+  useEffect(() => () => imageAttachmentsRef.current.forEach((image) => URL.revokeObjectURL(image.preview)), []);
+
+  async function addImages(fileList) {
+    const files = [...fileList];
+    if (imageAttachments.length + files.length > 4) { setError('Attach up to four images per message.'); return; }
+    setImageUploading(true);
+    setError('');
+    for (const file of files) {
+      const maxMb = file.type === 'application/pdf' ? 20 : 8;
+      if (file.size > maxMb * 1024 * 1024) { setError(`${file.name} is larger than the ${maxMb} MB limit.`); continue; }
+      const preview = URL.createObjectURL(file);
+      const local = { id: crypto.randomUUID(), preview, name: file.name, uploading: true };
+      setImageAttachments((current) => [...current, local]);
+      try {
+        const response = await apiFetch('/api/files', { method: 'POST', headers: { 'content-type': file.type, 'x-image-name': file.name }, body: file });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error?.message || 'Image upload failed.');
+        setImageAttachments((current) => current.map((image) => image.id === local.id ? { ...image, uploading: false, attachment: result.data } : image));
+      } catch (cause) {
+        setImageAttachments((current) => current.filter((image) => image.id !== local.id));
+        URL.revokeObjectURL(preview);
+        setError(cause.message || 'Image upload failed.');
+      }
+    }
+    setImageUploading(false);
+  }
+
+  function clearAttachedImages() {
+    setImageAttachments((current) => { current.forEach((image) => URL.revokeObjectURL(image.preview)); return []; });
+  }
 
   /* ── Load list & scroll ── */
   async function loadList() {
@@ -483,12 +519,13 @@ export default function App() {
   /* ── Core submit (shared by text composer AND voice transcript) ── */
   async function submit(event, reuseRequestKey = false, overrideMessage = '') {
     event?.preventDefault();
-    if (!(overrideMessage || input.trim()) || busy) return;
+    if (!(overrideMessage || input.trim() || imageAttachments.length) || busy || imageUploading || imageAttachments.some((image) => !image.attachment)) return;
     if (!reuseRequestKey || !requestKey.current) {
       requestKey.current = crypto.randomUUID();
       lastSequence.current = 0;
     }
     const message = (overrideMessage || input).trim();
+    const attachments = overrideMessage ? [] : imageAttachments.map(({ attachment }) => attachment).filter(Boolean);
     setInput('');
     setError('');
     setBusy(true);
@@ -504,7 +541,7 @@ export default function App() {
         : old;
       return [
         ...base,
-        { role: 'user', content: message, createdAt: new Date().toISOString() },
+        { role: 'user', content: message || 'Review the attached file(s) and answer the question about their contents.', attachments, createdAt: new Date().toISOString() },
         { role: 'assistant', content: '', sources: [], diff: [], searchRounds: 0, streaming: true }
       ];
     });
@@ -520,7 +557,7 @@ export default function App() {
           'idempotency-key': requestKey.current,
           'x-after-sequence': String(lastSequence.current)
         },
-        body: JSON.stringify({ conversationId: id ?? undefined, message }),
+        body: JSON.stringify({ conversationId: id ?? undefined, message, attachments }),
         signal: controller.signal
       });
 
@@ -562,6 +599,7 @@ export default function App() {
           if (event.type === 'findings') setFindings((old) => [...old, event]);
           if (event.type === 'delta') setMessages((old) => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content + event.text } : m));
           if (event.type === 'done') {
+            clearAttachedImages();
             setResearchTimeline((current) => current.map((step) => step.status === 'active' ? { ...step, status: 'finished' } : step));
             requestKey.current = null;
             lastSequence.current = 0;
@@ -586,7 +624,7 @@ export default function App() {
       setResearchTimeline((current) => current.map((step) => step.status === 'active' ? { ...step, status: 'failed', detail: e.message || step.detail } : step));
       setMessages((old) => {
         const next = old.filter((m) => !m.streaming);
-        if (!overrideMessage && next.at(-1)?.role === 'user' && next.at(-1)?.content === message) next.pop();
+        if (!overrideMessage && next.at(-1)?.role === 'user' && next.at(-1)?.content === (message || 'Review the attached file(s) and answer the question about their contents.')) next.pop();
         return next;
       });
       if (!overrideMessage) setInput((current) => current || message);
@@ -630,7 +668,7 @@ export default function App() {
         </div>
         <button type="button" className="sidebar-collapse" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">‹</button>
         </div>
-        <button className="new-chat" onClick={() => { setId(null); setMessages([]); setFindings([]); setResearchTimeline([]); setError(''); setConversationError(''); }}>
+        <button className="new-chat" onClick={() => { setId(null); setMessages([]); setFindings([]); setResearchTimeline([]); setError(''); setConversationError(''); clearAttachedImages(); setInput(''); }}>
           ＋ <span>New conversation</span>
         </button>
         <label className="conversation-search">
@@ -748,6 +786,7 @@ export default function App() {
                       <div className="avatar">{m.role === 'user' ? 'Y' : '✳'}</div>
                       <div className="bubble">
                         <div className="role-label">{m.role === 'user' ? 'YOU' : 'MINIMI'}</div>
+                        {m.role === 'user' && m.attachments?.length > 0 && <div className="message-images">{m.attachments.map((file) => file.mimeType === 'application/pdf' ? <a className="message-file" key={file.publicId} href={file.secureUrl} target="_blank" rel="noreferrer"><span aria-hidden="true">PDF</span><b>{file.name || 'Attached PDF'}</b><small>Open document ↗</small></a> : <a key={file.publicId} href={file.secureUrl} target="_blank" rel="noreferrer"><img src={file.secureUrl} alt={file.name || 'Attached image'} loading="lazy" /></a>)}</div>}
                         <div className="content">{renderText(m.content, m.sources)}{m.streaming && <span className="cursor" />}</div>
                         {!m.streaming && m.createdAt && <time className="message-time" dateTime={m.createdAt}>{new Date(m.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}
                         {/* Optional "Listen" button in text mode — uses Gnani Timbre */}
@@ -785,8 +824,11 @@ export default function App() {
             {/* Text composer */}
             <form className={`composer ${input ? 'has-input' : ''}`} onSubmit={submit}>
               {audioToolsOpen && <div className="composer-tools"><AudioUpload conversationId={id} onTranscript={(text) => { setInput(text); setAudioToolsOpen(false); }} onError={setError} /></div>}
+              {imageAttachments.length > 0 && <div className="composer-images">{imageAttachments.map((image) => <div className="composer-image" key={image.id}>{image.attachment?.mimeType === 'application/pdf' ? <span className="pdf-icon" aria-hidden="true">PDF</span> : <img src={image.preview} alt={image.name} />}<span>{image.uploading ? 'Uploading…' : image.name}</span><button type="button" disabled={image.uploading || busy} onClick={() => { URL.revokeObjectURL(image.preview); setImageAttachments((items) => items.filter((item) => item.id !== image.id)); }} aria-label={`Remove ${image.name}`}>×</button></div>)}</div>}
               <div className="composer-input-row">
                 <button className="composer-attach" type="button" onClick={() => setAudioToolsOpen((open) => !open)} aria-expanded={audioToolsOpen} aria-label={audioToolsOpen ? 'Close audio input tools' : 'Add audio or record a voice question'} title="Add audio or record voice">{audioToolsOpen ? '×' : '+'}</button>
+                <input ref={imageInput} className="image-file-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.pdf" multiple hidden onChange={(event) => { if (event.target.files?.length) void addImages(event.target.files); event.target.value = ''; }} />
+                <button className="composer-image-button" type="button" onClick={() => imageInput.current?.click()} disabled={busy || imageUploading || imageAttachments.length >= 4} aria-label="Attach images or PDF documents" title="Attach images or PDFs">▧</button>
                 <textarea
                   ref={composerInput}
                   value={input}
@@ -800,7 +842,7 @@ export default function App() {
               <div className="composer-bottom">
                 <span className="research-mode-indicator"><i aria-hidden="true" /> Context & web research</span>
                 <span className="composer-shortcut">Enter to send · Shift + Enter for a new line</span>
-                <button type="submit" disabled={busy || !input.trim()} aria-label={busy ? 'Research in progress' : 'Send message'}>{busy ? <span className="spinner" /> : '↑'}</button>
+                <button type="submit" disabled={busy || imageUploading || !(input.trim() || imageAttachments.length)} aria-label={busy ? 'Research in progress' : 'Send message'}>{busy || imageUploading ? <span className="spinner" /> : '↑'}</button>
               </div>
             </form>
 

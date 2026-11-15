@@ -68,7 +68,7 @@ The frontend runs at http://localhost:5173 and the API at http://localhost:3001.
 npm test
 ```
 
-Unit tests cover routing, dates, entity extraction, chunking, RRF, citations and retries. API tests cover validation and readiness behavior. `tests/evaluation/scenarios.json` contains 20 evaluation scenarios, including all three assignment examples; these are scenario fixtures, not an automated live-provider scorecard. Database/provider integration should be run against configured services with secrets kept outside source control.
+Unit tests cover routing, dates, entity extraction, chunking, RRF, citations, image/PDF validation and retries. API tests cover validation and readiness behavior. `tests/evaluation/scenarios.json` contains the fixed answer-quality scenario set, including image, PDF and multi-turn cases; these are fixtures rather than a live-provider scorecard. See `tests/evaluation/README.md` for the repeatable reference rubric and provider-backed evaluation procedure. Database/provider integration should be run against configured services with secrets kept outside source control.
 
 ## GitHub Actions workflow
 

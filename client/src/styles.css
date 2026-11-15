@@ -548,3 +548,19 @@ body{background:#f3f2ec;color:var(--ink)}
 }
 @media(max-height:700px) and (min-width:761px){.thread{padding-top:24px}.welcome{margin-top:3vh}.welcome h1{font-size:40px}}
 .reduce-motion *,html.reduce-motion *::before,html.reduce-motion *::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+
+/* Image questions share the existing research composer and persisted message flow. */
+.composer-image-button{border:1px solid #e5e8df;background:#f8f9f5;color:#506653;border-radius:8px;width:32px;height:32px;flex:0 0 32px;font-size:17px;cursor:pointer}
+.composer-image-button:disabled{opacity:.4;cursor:default}
+.composer-images,.message-images{display:flex;gap:9px;flex-wrap:wrap;padding:2px 0 10px}
+.composer-image{position:relative;display:flex;align-items:center;gap:7px;max-width:190px;padding:5px 25px 5px 5px;border:1px solid #e8e9df;border-radius:9px;background:#fafbf7;color:#627066;font-size:10px}
+.composer-image img,.message-images img{width:44px;height:44px;object-fit:cover;border-radius:6px}
+.composer-image span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:105px}
+.composer-image button{position:absolute;right:4px;top:3px;border:0;background:transparent;color:#69776c;font-size:17px;cursor:pointer}
+.message-images{padding:0 0 9px}
+.message-images img{width:min(240px,55vw);height:auto;max-height:240px;object-fit:contain;background:#fff;border:1px solid #e7e8de}
+.pdf-icon{display:grid;place-items:center;width:44px;height:44px;flex:0 0 44px;border-radius:6px;background:#f2e8e3;color:#8a4e38;font-size:10px;font-weight:800;letter-spacing:.4px}
+.message-file{display:grid;grid-template-columns:38px minmax(0,1fr);align-items:center;column-gap:9px;min-width:min(260px,70vw);padding:10px 12px;border:1px solid #e7e8de;border-radius:9px;background:#fff;color:#35473b;text-decoration:none}
+.message-file>span{grid-row:span 2;display:grid;place-items:center;width:36px;height:42px;border-radius:5px;background:#f2e8e3;color:#8a4e38;font-size:9px;font-weight:800}
+.message-file b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600}
+.message-file small{color:#829087;font-size:10px}

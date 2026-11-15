@@ -72,8 +72,19 @@ export async function retrieveMemory(query, timezone = env.USER_TIMEZONE, signal
       const vectorParam = `[${vector.join(',')}]`;
       const vectorParams = range ? [vectorParam, userId, range.start, range.end] : [vectorParam, userId];
       const vectorDate = range ? `AND mc."startAt" < $4 AND mc."endAt" >= $3` : '';
-      vectorRows = await prisma.$queryRawUnsafe(`SELECT mc.id, mc."conversationId", mc.content, mc.topic, mc."startAt", mc."endAt" FROM "MemoryChunk" mc JOIN "Conversation" c ON c.id = mc."conversationId" WHERE c."userId" = $2 AND mc.embedding IS NOT NULL ${vectorDate} ORDER BY mc.embedding <=> $1::vector LIMIT 25`, ...vectorParams);
+      vectorRows = await prisma.$queryRawUnsafe(`SELECT mc.id, mc."conversationId", mc.content, mc.topic, mc."startAt", mc."endAt", 1 - (mc.embedding <=> $1::vector) AS "semanticSimilarity" FROM "MemoryChunk" mc JOIN "Conversation" c ON c.id = mc."conversationId" WHERE c."userId" = $2 AND mc.embedding IS NOT NULL ${vectorDate} ORDER BY mc.embedding <=> $1::vector LIMIT 25`, ...vectorParams);
     }
   } catch { /* keyword path remains useful when embeddings are unavailable */ }
-  return { chunks: reciprocalRankFusion([keywordRows, messageRows, summaryRows, claimRows, vectorRows, entityRows], 60).slice(0, env.MAX_CONTEXT_CHUNKS), range, retrievalSucceeded: true };
+  const queryTerms = new Set(query.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  const stopWords = new Set(['what', 'when', 'where', 'which', 'with', 'from', 'that', 'this', 'have', 'does', 'about', 'were', 'was', 'did', 'can', 'our', 'the', 'and', 'for', 'you', 'last', 'since']);
+  for (const word of stopWords) queryTerms.delete(word);
+  const fused = reciprocalRankFusion([keywordRows, messageRows, summaryRows, claimRows, vectorRows, entityRows], 60);
+  const reranked = fused.map((item) => {
+    const terms = new Set((`${item.topic ?? ''} ${item.content ?? ''}`).toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+    const overlap = queryTerms.size ? [...queryTerms].filter((term) => terms.has(term)).length / queryTerms.size : 0;
+    const semantic = Number(item.semanticSimilarity ?? 0);
+    return { ...item, relevanceScore: overlap, rerankScore: (item.rrfScore ?? 0) + overlap * 0.12 + Math.max(0, semantic) * 0.04 };
+  }).filter((item) => item.relevanceScore > 0 || Number(item.semanticSimilarity ?? 0) >= 0.45)
+    .sort((a, b) => b.rerankScore - a.rerankScore);
+  return { chunks: reranked.slice(0, env.MAX_CONTEXT_CHUNKS), range, retrievalSucceeded: true };
 }

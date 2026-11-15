@@ -8,7 +8,7 @@ export default function AudioPlayer({ src, base64, contentType = 'audio/wav' }) 
     const binary = atob(base64); const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0)); const objectUrl = URL.createObjectURL(new Blob([bytes], { type: contentType }));
     setUrl(objectUrl); return () => URL.revokeObjectURL(objectUrl);
   }, [src, base64, contentType]);
-  return url ? <audio controls preload="none" src={url} style={{ maxWidth: '100%' }}>Audio playback is unavailable in this browser.</audio> : null;
+  return url ? <VoicePlaybackControls audioUrl={url} autoPlay={false} /> : null;
 }
 
 export function SpeakAnswer({ text }) {

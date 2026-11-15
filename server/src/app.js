@@ -15,6 +15,7 @@ import { getMetrics, observeHttp } from './infrastructure/metrics.js';
 import { voiceRouter } from './modules/voice/routes.js';
 import { audioProcessingRouter } from './modules/audio-processing/routes.js';
 import { preferencesRouter } from './modules/preferences/routes.js';
+import { uploadFile, validateFile } from './modules/images/cloudinary.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -36,6 +37,17 @@ app.get('/api/v1/health', async (_req, res) => {
   res.status(database === 'unavailable' ? 503 : 200).json({ success: true, data: { application: 'ready', database }, error: null });
 });
 app.use('/api', authenticate);
+const maxUploadMb = Math.max(env.MAX_IMAGE_SIZE_MB, env.MAX_PDF_SIZE_MB);
+const uploadHandler = async (req, res, next) => {
+  try {
+    const mimeType = req.get('content-type')?.split(';')[0]?.trim();
+    if (!validateFile(req.body, mimeType)) return res.status(415).json({ success: false, data: null, error: { code: 'INVALID_FILE', message: 'Choose a valid JPEG, PNG, WebP, GIF or PDF file.' } });
+    const file = await uploadFile(req.body, mimeType, req.user.id, String(req.get('x-image-name') || 'File').slice(0, 180));
+    res.status(201).json({ success: true, data: file, error: null });
+  } catch (error) { next(error); }
+};
+const uploadParser = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'], limit: `${maxUploadMb}mb` });
+app.post(['/api/images', '/api/files'], uploadParser, uploadHandler);
 app.use('/api/preferences', preferencesRouter);
 app.use('/api/v1/preferences', preferencesRouter);
 app.use('/api/v1', voiceRouter);
@@ -48,12 +60,12 @@ app.get('/api/auth/me', (req, res) => res.json({ success: true, data: { user: re
 app.get('/api/health', async (req, res) => {
   let database = 'not_configured';
   if (prisma) { try { await prisma.$queryRaw`SELECT 1`; database = 'ready'; } catch { database = 'unavailable'; } }
-  res.status(database === 'unavailable' ? 503 : 200).json({ success: true, data: { application: 'ready', database, geminiConfigured: Boolean(env.GEMINI_API_KEY), groqConfigured: Boolean(env.GROQ_API_KEY), searchConfigured: Boolean(env.TAVILY_API_KEY) }, error: null });
+  res.status(database === 'unavailable' ? 503 : 200).json({ success: true, data: { application: 'ready', database, geminiConfigured: Boolean(env.GEMINI_API_KEY), groqConfigured: Boolean(env.GROQ_API_KEY), searchConfigured: Boolean(env.TAVILY_API_KEY), imageUploadConfigured: Boolean(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET) }, error: null });
 });
 
 app.post('/api/chat', async (req, res, next) => {
-  const parsed = z.object({ conversationId: z.string().optional(), message: z.string().trim().min(1).max(12000) }).safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ success: false, data: null, error: { code: 'INVALID_REQUEST', message: 'Provide a message of 1 to 12000 characters.' } });
+  const parsed = z.object({ conversationId: z.string().optional(), message: z.string().trim().max(12000).default(''), attachments: z.array(z.object({ publicId: z.string(), secureUrl: z.string().url(), mimeType: z.string(), resourceType: z.enum(['image', 'raw']).optional(), format: z.string(), name: z.string().optional(), bytes: z.number().optional(), width: z.number().optional(), height: z.number().optional() })).max(4).default([]) }).refine((value) => value.message.length > 0 || value.attachments.length > 0).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ success: false, data: null, error: { code: 'INVALID_REQUEST', message: 'Provide a message or attach an image (up to four images).' } });
   const idempotencyKey = z.string().trim().min(8).max(120).safeParse(req.get('idempotency-key'));
   if (!idempotencyKey.success) return res.status(400).json({ success: false, data: null, error: { code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'Send a unique Idempotency-Key header for this chat turn.' } });
   if (!prisma) return next(Object.assign(new Error('Database is not configured'), { code: 'DATABASE_UNAVAILABLE' }));

@@ -32,8 +32,8 @@ function formatForSpeech(answer) {
     .replace(/\|/g, ', ')
     .replace(/\s+/g, ' ')
     .trim();
-  const concise = body.split(/(?<=[.!?।])\s+/).filter(Boolean).slice(0, 2).join(' ').slice(0, 420).trim();
-  return concise ? `${concise} Do you need more in-depth information? Let me know.` : '';
+  const concise = body.split(/(?<=[.!?।])\s+/).filter(Boolean).slice(0, 4).join(' ').slice(0, 650).trim();
+  return concise ? `${concise.replace(/[\s.!?]+$/, '')}. I can go deeper on any of those if you’d like.` : '';
 }
 
 function finalizeSpokenAnswer(text) {
@@ -51,8 +51,10 @@ function finalizeSpokenAnswer(text) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!body) return '';
-  const concise = body.split(/(?<=[.!?।])\s+/).filter(Boolean).slice(0, 2).join(' ').slice(0, 420).trim();
-  return concise ? `${concise} Do you need more in-depth information? Let me know.` : '';
+  const concise = body.split(/(?<=[.!?।])\s+/).filter(Boolean).slice(0, 5).join(' ').slice(0, 850).trim();
+  return concise && !/(?:if you(?:’|'| )d like|want me to expand|happy to explain more)\.?$/i.test(concise)
+    ? `${concise.replace(/[\s.!?]+$/, '')}. I can go deeper on any of those if you’d like.`
+    : concise;
 }
 
 function VoiceAnswerContent({ message }) {
@@ -258,13 +260,9 @@ export default function VoiceModeInterface({
   const [synthesizing, setSynthesizing] = useState(false);
   const [audioUrl, setAudioUrl] = useState('');
   const [audioError, setAudioError] = useState('');
-  const [browserSpeech, setBrowserSpeech] = useState(false);
-  const [browserSpeaking, setBrowserSpeaking] = useState(false);
-  const [browserPaused, setBrowserPaused] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [playbackPaused, setPlaybackPaused] = useState(false);
   const [interruptKey, setInterruptKey] = useState(0);
-  const [spokenAnswer, setSpokenAnswer] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [webglOrbEnabled, setWebglOrbEnabled] = useState(false);
 
@@ -302,7 +300,6 @@ export default function VoiceModeInterface({
         mediaRecorderRef.current.stop();
       }
       micStreamRef.current?.getTracks().forEach((track) => track.stop());
-      window.speechSynthesis?.cancel();
       synthesisControllerRef.current?.abort();
     };
   }, []);
@@ -330,9 +327,6 @@ export default function VoiceModeInterface({
     synthesisControllerRef.current = controller;
     setSynthesizing(true);
     setAudioError('');
-    setBrowserSpeech(false);
-    setSpokenAnswer('');
-    window.speechSynthesis?.cancel();
     let cleanText = finalizeSpokenAnswer(formatForSpeech(text));
     try {
       const prepared = await fetch('/api/v1/voice/prepare-answer', {
@@ -347,14 +341,13 @@ export default function VoiceModeInterface({
         if (body.data?.text?.trim()) cleanText = finalizeSpokenAnswer(body.data.text);
       }
       if (!cleanText) throw new Error('There is no answer text to speak.');
-      setSpokenAnswer(cleanText);
 
       const response = await fetch('/api/v1/voice/synthesize', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: cleanText.slice(0, 4000),
+          text: cleanText.slice(0, 30000),
           language: voiceSettings.language === 'indic-auto' ? 'auto' : voiceSettings.language,
           voice: voiceSettings.voice || 'Shivani',
           speed: voiceSettings.speed || 1
@@ -390,29 +383,12 @@ export default function VoiceModeInterface({
         }
         if (!completed) throw new Error('Speech generation is taking longer than expected.');
       }
-    } catch {
+    } catch (cause) {
       if (controller.signal.aborted) return;
-      if ('speechSynthesis' in window && 'SpeechSynthesisUtterance' in window && cleanText) {
-        if (voiceSettings.autoPlay) startBrowserSpeech(cleanText);
-        setBrowserSpeech(true);
-      } else {
-        setAudioError('Voice playback is unavailable. You can try playing the answer again.');
-      }
+      setAudioError(`Timbre voice generation failed: ${cause.message || 'the audio service is unavailable'}. Retry to hear your selected voice.`);
     } finally {
       if (synthesisControllerRef.current === controller) setSynthesizing(false);
     }
-  }
-
-  function startBrowserSpeech(text) {
-    setBrowserSpeaking(false);
-    setBrowserPaused(false);
-    const utterance = new SpeechSynthesisUtterance(text.slice(0, 4000));
-    utterance.lang = voiceSettings.language === 'indic-auto' ? 'en-IN' : voiceSettings.language;
-    utterance.rate = Number(voiceSettings.speed || 1);
-    utterance.onstart = () => { setBrowserSpeaking(true); setBrowserPaused(false); };
-    utterance.onend = () => { setBrowserSpeaking(false); setBrowserPaused(false); };
-    utterance.onerror = () => { setBrowserSpeaking(false); setBrowserPaused(false); };
-    window.speechSynthesis.speak(utterance);
   }
 
   /* ── Recording ── */
@@ -425,9 +401,6 @@ export default function VoiceModeInterface({
     synthesisControllerRef.current?.abort();
     setSpeaking(false);
     setInterruptKey((key) => key + 1);
-    window.speechSynthesis?.cancel();
-    setBrowserSpeaking(false);
-    setBrowserPaused(false);
     audioChunksRef.current = [];
     let acquiredStream;
     try {
@@ -623,8 +596,8 @@ export default function VoiceModeInterface({
     ? 'processing'
     : busy
     ? (stage === 'memory' ? 'memory' : stage === 'search' ? 'searching' : stage === 'compare' ? 'comparing' : 'researching')
-    : (speaking || browserSpeaking) ? 'speaking'
-    : (playbackPaused || browserPaused) ? 'paused'
+    : speaking ? 'speaking'
+    : playbackPaused ? 'paused'
     : (error || permissionError || audioError) ? 'error'
     : 'idle';
 
@@ -728,32 +701,12 @@ export default function VoiceModeInterface({
         {/* ── IDLE/DONE: Show last exchange as compact card ── */}
         {['idle', 'speaking', 'paused'].includes(statePhase) && lastAsstMsg && (
           <div className="voice-answer-card" style={{ background: '#f5f8f4', border: '1px solid #dde7db', borderRadius: '16px', padding: '14px 16px', marginBottom: '16px' }}>
-            <VoiceAnswerContent message={lastAsstMsg} />
-            {lastAsstMsg.diff?.length > 0 && <div className="voice-diff-list" aria-label="Historical comparison">
-              {lastAsstMsg.diff.map((entry, index) => <article key={index}>
-                <b>{entry.entity}{entry.attribute ? ` · ${entry.attribute}` : ''}</b>
-                <div><span>Then</span><p>{entry.historicalValue ?? 'No historical value'}</p></div>
-                <div><span>Now</span><p>{entry.currentValue ?? 'No current evidence'}</p></div>
-                <small className={`diff-status ${entry.status || ''}`}>{String(entry.status || 'comparison').replaceAll('_', ' ')}</small>
-              </article>)}
-            </div>}
             {synthesizing ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '12px', color: '#566e5f' }}>
                 <span className="spinner" /> Preparing your spoken answer…
               </div>
             ) : audioUrl ? (
               <VoicePlaybackControls audioUrl={audioUrl} autoPlay={voiceSettings.autoPlay} interruptKey={interruptKey} onPlaybackChange={(playing, paused) => { setSpeaking(playing); setPlaybackPaused(paused); }} />
-            ) : browserSpeech ? (
-              <div className="browser-speech-controls" role="group" aria-label="Spoken answer controls">
-                <button type="button" onClick={() => {
-                  if (browserPaused) { window.speechSynthesis.resume(); setBrowserPaused(false); setBrowserSpeaking(true); }
-                  else if (browserSpeaking) { window.speechSynthesis.pause(); setBrowserPaused(true); setBrowserSpeaking(false); }
-                  else startBrowserSpeech(spokenAnswer || formatForSpeech(lastAsstMsg.content));
-                }} aria-label={browserPaused ? 'Resume spoken answer' : browserSpeaking ? 'Pause spoken answer' : 'Replay spoken answer'}>
-                  {browserPaused ? '▶ Resume' : browserSpeaking ? 'Ⅱ Pause' : '↺ Replay'}
-                </button>
-                <button type="button" onClick={() => { window.speechSynthesis.cancel(); setBrowserSpeaking(false); setBrowserPaused(false); }}>Stop</button>
-              </div>
             ) : (
               <button type="button" onClick={() => void synthesizeResponse(lastAsstMsg.content)} style={{ background: '#243b35', color: '#eaffb7', border: 'none', borderRadius: '8px', padding: '8px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
                 🔊 Play spoken answer
@@ -764,7 +717,7 @@ export default function VoiceModeInterface({
 
         {/* Audio error (non-critical) */}
         {audioError && ['idle', 'speaking'].includes(statePhase) && (
-          <div style={{ marginBottom: '10px', fontSize: '11px', color: '#88554c', textAlign: 'center' }}>{audioError}</div>
+      <div style={{ marginBottom: '10px', fontSize: '11px', color: '#88554c', textAlign: 'center' }}>{audioError}</div>
         )}
 
         {/* ── Main voice card ─────────────────────────── */}
@@ -783,7 +736,7 @@ export default function VoiceModeInterface({
         >
           {/* Waveform */}
           <div style={{ minHeight: '44px', display: 'grid', placeItems: 'center', marginBottom: '14px' }}>
-            <AudioWaveform active={recording || speaking || browserSpeaking} stream={recording ? micStream : null} />
+            <AudioWaveform active={recording || speaking} stream={recording ? micStream : null} />
           </div>
 
           {/* Big mic button */}

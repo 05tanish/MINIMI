@@ -13,12 +13,14 @@ import { diffClaims, formatDiffForLLM } from '../temporal/diff.js';
 import { extractDateRange } from '../temporal/temporal.js';
 import { env } from '../../config/env.js';
 import { normalizeEntity } from '../claims/extract.js';
+import { loadCloudinaryImage } from '../images/cloudinary.js';
 
-export async function runChat({ conversationId, message, userId, idempotencyKey, onEvent, shouldStop = () => false, afterSequence = 0 }) {
+export async function runChat({ conversationId, message, attachments = [], userId, idempotencyKey, onEvent, shouldStop = () => false, afterSequence = 0 }) {
   if (!prisma) throw Object.assign(new Error('Database is not configured'), { code: 'DATABASE_UNAVAILABLE' });
   const key = idempotencyKey || crypto.randomUUID();
   const existingTurn = await prisma.chatTurn.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey: key } }, include: { conversation: true, userMessage: true, assistantMessage: { include: { sources: true } } } });
-  if (existingTurn && existingTurn.userMessage.content !== message) throw Object.assign(new Error('This Idempotency-Key was already used for a different message.'), { code: 'IDEMPOTENCY_CONFLICT' });
+  const normalizedMessage = message || 'Review the attached file(s) and answer the user’s question about their contents.';
+  if (existingTurn && (existingTurn.userMessage.content !== normalizedMessage || JSON.stringify(existingTurn.userMessage.attachments ?? []) !== JSON.stringify(attachments))) throw Object.assign(new Error('This Idempotency-Key was already used for a different message.'), { code: 'IDEMPOTENCY_CONFLICT' });
   let conversation = existingTurn?.conversation ?? (conversationId ? await prisma.conversation.findFirst({ where: { id: conversationId, userId } }) : null);
   if (conversationId && !conversation) throw Object.assign(new Error('Conversation was not found'), { code: 'NOT_FOUND' });
   let turn = existingTurn;
@@ -26,8 +28,8 @@ export async function runChat({ conversationId, message, userId, idempotencyKey,
     let created;
     try {
       created = await prisma.$transaction(async (tx) => {
-        const currentConversation = conversation ?? await tx.conversation.create({ data: { userId, title: message.slice(0, 80) } });
-        const currentUserMessage = await tx.message.create({ data: { conversationId: currentConversation.id, role: 'user', content: message } });
+        const currentConversation = conversation ?? await tx.conversation.create({ data: { userId, title: (normalizedMessage || 'Image question').slice(0, 80) } });
+        const currentUserMessage = await tx.message.create({ data: { conversationId: currentConversation.id, role: 'user', content: normalizedMessage, attachments } });
         const currentTurn = await tx.chatTurn.create({ data: { userId, conversationId: currentConversation.id, userMessageId: currentUserMessage.id, idempotencyKey: key, status: 'queued' } });
         await tx.outboxEvent.create({ data: { type: 'chat.run', aggregateId: currentConversation.id, payload: { turnId: currentTurn.id } } });
         return { conversation: currentConversation, userMessage: currentUserMessage, turn: currentTurn };
@@ -38,7 +40,7 @@ export async function runChat({ conversationId, message, userId, idempotencyKey,
       if (error.code !== 'P2002') throw error;
       const racedTurn = await prisma.chatTurn.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey: key } }, include: { conversation: true, userMessage: true, assistantMessage: { include: { sources: true } } } });
       if (!racedTurn) throw error;
-      if (racedTurn.userMessage.content !== message) throw Object.assign(new Error('This Idempotency-Key was already used for a different message.'), { code: 'IDEMPOTENCY_CONFLICT' });
+      if (racedTurn.userMessage.content !== normalizedMessage || JSON.stringify(racedTurn.userMessage.attachments ?? []) !== JSON.stringify(attachments)) throw Object.assign(new Error('This Idempotency-Key was already used for a different message.'), { code: 'IDEMPOTENCY_CONFLICT' });
       created = { conversation: racedTurn.conversation, turn: racedTurn };
     }
     conversation = created.conversation; turn = created.turn;
@@ -91,10 +93,14 @@ async function executeChatTurn({ turn, onEvent }) {
   // budget before research even starts.
   try { analysis = await analyzeQuery(message, AbortSignal.timeout(Math.min(5000, env.GEMINI_MODEL_TIMEOUT_MS))); }
   catch (error) { logger.warn({ code: error.code ?? error.name }, 'Query analysis failed; using rule-based routing'); analysis = { ...routeIntent(message), searchQueries: [], entities: [] }; }
-  // Every request should use the user's history when available and check the
-  // web for fresh evidence. The model's intent classification can inform query
-  // planning, but must not disable either data source for ordinary questions.
-  const routing = { ...routeIntent(message), ...analysis, memory: true, web: true };
+  // Combine model classification with deterministic cues so follow-up and
+  // temporal references remain routable when the classifier misses them.
+  const ruleRouting = routeIntent(message);
+  // Keep deterministic intent signals when the classifier misses a temporal or follow-up cue.
+  const routing = { ...analysis, memory: Boolean(analysis.memory || ruleRouting.memory), web: Boolean(analysis.web || ruleRouting.web) };
+
+  const recentMessages = await prisma.message.findMany({ where: { conversationId: conversation.id, id: { not: userMessage.id } }, orderBy: { createdAt: 'desc' }, take: 8, select: { role: true, content: true, createdAt: true, attachments: true } });
+  const currentHistory = recentMessages.reverse().map((item) => ({ kind: 'current_conversation', content: `${item.role === 'assistant' ? 'Minimi' : 'User'}: ${item.content}${item.attachments?.length ? ' [image attached]' : ''}`, createdAt: item.createdAt.toISOString() }));
 
   // 2. Retrieve memory (historical conversation context)
   let memory = { chunks: [], retrievalSucceeded: false };
@@ -111,6 +117,7 @@ async function executeChatTurn({ turn, onEvent }) {
       onEvent({ type: 'progress', stage: 'memory', status: 'failed', detail: 'Previous conversation context could not be retrieved.' });
     }
   }
+  const answerHistory = [...currentHistory, ...memory.chunks.map((item) => ({ ...item, kind: 'retrieved_memory' }))];
 
   // 3. Adaptive query planning: generate search queries informed by memory
   let search = { sources: [], failures: [], rounds: 0 };
@@ -188,12 +195,19 @@ async function executeChatTurn({ turn, onEvent }) {
   let answer;
   const llmStartedAt = Date.now();
   try {
-    answer = await generateAnswer({ query: message, history: memory.chunks, sources, diff, signal: llmSignal, onToken: (text) => onEvent({ type: 'delta', text }) });
+    onEvent({ type: 'progress', stage: 'answer', detail: 'Preparing image context...' });
+    const currentImages = userMessage.attachments ?? [];
+    const lastFileTurn = [...recentMessages].reverse().find((item) => item.role === 'user' && item.attachments?.length);
+    const referencedHistoryFiles = !currentImages.length && /\b(image|photo|picture|screenshot|pdf|document|file|it|this|that|one|those|these)\b/i.test(message) ? (lastFileTurn?.attachments ?? []) : [];
+    const imageInputs = [...currentImages, ...referencedHistoryFiles].slice(0, 4);
+    const images = await Promise.all(imageInputs.map((image) => loadCloudinaryImage(image, userId, llmSignal)));
+    answer = await generateAnswer({ query: message, history: answerHistory, sources, diff, images, signal: llmSignal, onToken: (text) => onEvent({ type: 'delta', text }) });
     logger.info({ conversationId: conversation.id, llmDurationMs: Date.now() - llmStartedAt, retrievalCount: memory.chunks.length, sourceCount: sources.length, diffEntries: diff?.entries?.length ?? 0, searchRounds: search.rounds }, 'Answer generated');
   } catch (error) {
     const rateLimited = error.status === 429;
-    const code = budgetController.signal.aborted ? 'RESEARCH_TIMEOUT' : rateLimited ? 'LLM_RATE_LIMITED' : 'LLM_UNAVAILABLE';
-    const messageText = budgetController.signal.aborted ? 'The research time budget was exceeded. Your message was saved.' : rateLimited ? 'Answer generation is rate-limited right now. Your message was saved; please retry shortly.' : 'The answer service is temporarily unavailable. Your message was saved.';
+    const attachmentFailure = /^(?:IMAGE_|VISION_)/.test(error.code ?? '');
+    const code = attachmentFailure ? error.code : budgetController.signal.aborted ? 'RESEARCH_TIMEOUT' : rateLimited ? 'LLM_RATE_LIMITED' : 'LLM_UNAVAILABLE';
+    const messageText = attachmentFailure ? `${error.message} Your message was saved; you can retry after resolving the image issue.` : budgetController.signal.aborted ? 'The research time budget was exceeded. Your message was saved.' : rateLimited ? 'Answer generation is rate-limited right now. Your message was saved; please retry shortly.' : 'The answer service is temporarily unavailable. Your message was saved.';
     logger.warn({ conversationId: conversation.id, code, status: error.status ?? null }, 'Answer generation failed');
     throw Object.assign(new Error(messageText), { code, cause: error });
   } finally { clearTimeout(timer); }

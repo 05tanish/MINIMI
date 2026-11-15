@@ -14,6 +14,7 @@ import { estimateTokens, truncateToTokens } from '../../server/src/utils/tokens.
 import { hashPassword, verifyPassword } from '../../server/src/modules/auth/service.js';
 import { assertPublicHttpUrl } from '../../server/src/infrastructure/search/extract.js';
 import { readFileSync } from 'node:fs';
+import { validateFile } from '../../server/src/modules/images/cloudinary.js';
 
 const evaluationScenarios = JSON.parse(readFileSync(new URL('../evaluation/scenarios.json', import.meta.url), 'utf8'));
 
@@ -22,6 +23,31 @@ describe('intent routing', () => {
   it('routes historical comparisons to both tools', () => expect(routeIntent('Has the pricing changed since last week?')).toMatchObject({ memory: true, web: true }));
   it('routes current pricing to search only', () => expect(routeIntent('What is current pricing?')).toMatchObject({ memory: false, web: true }));
   it('keeps general chat local', () => expect(routeIntent('Explain how a database index works')).toMatchObject({ memory: false, web: false }));
+  it('routes follow-ups and requests to continue back to memory', () => {
+    expect(routeIntent('Continue from where we stopped')).toMatchObject({ memory: true, web: false });
+    expect(routeIntent('Compare this with the previous answer')).toMatchObject({ memory: true });
+  });
+});
+
+describe('image upload validation', () => {
+  it('accepts matching raster signatures and rejects MIME spoofing', () => {
+    expect(validateFile(Buffer.from([0xff, 0xd8, 0xff, 0x00]), 'image/jpeg')).toBe(true);
+    expect(validateFile(Buffer.from('not a png'), 'image/png')).toBe(false);
+    expect(validateFile(Buffer.from([0xff, 0xd8, 0xff]), 'image/png')).toBe(false);
+    expect(validateFile(Buffer.from('<svg/>'), 'image/svg+xml')).toBe(false);
+  });
+  it('accepts PDFs with the expected signature and rejects renamed text files', () => {
+    expect(validateFile(Buffer.from('%PDF-1.7\nbody'), 'application/pdf')).toBe(true);
+    expect(validateFile(Buffer.from('not a pdf'), 'application/pdf')).toBe(false);
+  });
+});
+
+describe('answer evaluation coverage', () => {
+  it('keeps a stable benchmark across memory, research, reasoning and image tasks', () => {
+    const categories = new Set(evaluationScenarios.map((scenario) => scenario.category).filter(Boolean));
+    expect([...categories]).toEqual(expect.arrayContaining(['general', 'technical', 'coding', 'multi-turn', 'memory', 'current-research', 'price-comparison', 'ambiguity', 'conflicting-sources', 'incorrect-premise', 'image', 'pdf']));
+    expect(evaluationScenarios.every((scenario) => scenario.setup && scenario.query && (scenario.checks || scenario.referenceAssertions))).toBe(true);
+  });
 });
 
 describe('account password security', () => {
@@ -271,7 +297,7 @@ describe('offline research scenario evaluation', () => {
     const queries = planSearchQueries(scenario.query, { entities: [], searchQueries: [] }, []);
     expect(queries[0]).toBe(scenario.query);
   });
-  it.each(evaluationScenarios.filter((scenario) => scenario.checks.some((check) => ['date-filter', 'weekday-filter', 'temporal', 'ambiguous-date'].includes(check))))('recognizes temporal intent in $id', (scenario) => {
+  it.each(evaluationScenarios.filter((scenario) => (scenario.checks ?? []).some((check) => ['date-filter', 'weekday-filter', 'temporal', 'ambiguous-date'].includes(check))))('recognizes temporal intent in $id', (scenario) => {
     expect(extractDateRange(scenario.query, new Date('2026-11-13T00:00:00Z'), 'Asia/Kolkata')).not.toBeNull();
   });
 });

@@ -23,15 +23,6 @@ export default function VoicePlaybackControls({
     setCurrentTime(0);
     setDuration(0);
     setPlaybackError('');
-    audio.src = audioUrl;
-    audio.load();
-
-    if (autoPlay) {
-      audio.play().then(() => setPlaying(true)).catch(() => {
-        // Autoplay may be restricted by browser until user gesture
-        setPlaying(false);
-      });
-    }
 
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
@@ -41,7 +32,11 @@ export default function VoicePlaybackControls({
     };
     const onTimeUpdate = () => setCurrentTime(audio.currentTime);
     const onLoadedMetadata = () => setDuration(audio.duration || 0);
-    const onError = () => setPlaybackError('This response audio could not be played. Try generating it again.');
+    const onError = () => {
+      const reasons = { 1: 'playback was interrupted', 2: 'the audio could not be loaded', 3: 'the audio format could not be decoded', 4: 'the audio format is not supported' };
+      const detail = reasons[audio.error?.code] || 'the media source failed';
+      setPlaybackError(`Timbre audio could not be played: ${detail}.`);
+    };
 
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
@@ -49,6 +44,15 @@ export default function VoicePlaybackControls({
     audio.addEventListener('timeupdate', onTimeUpdate);
     audio.addEventListener('loadedmetadata', onLoadedMetadata);
     audio.addEventListener('error', onError);
+    audio.src = audioUrl;
+    audio.load();
+
+    if (autoPlay) {
+      audio.play().then(() => setPlaying(true)).catch(() => {
+        setPlaybackError('Autoplay was blocked. Tap Play to hear the Timbre voice.');
+        setPlaying(false);
+      });
+    }
 
     return () => {
       audio.pause();
@@ -76,7 +80,7 @@ export default function VoicePlaybackControls({
       audio.pause();
     } else {
       setPlaybackError('');
-      audio.play().catch(() => setPlaybackError('Audio playback is unavailable in this browser.'));
+      audio.play().catch(() => setPlaybackError('Timbre audio could not be played in this browser. Download the file or generate the answer again.'));
     }
   }
 
@@ -85,7 +89,7 @@ export default function VoicePlaybackControls({
     if (!audio) return;
     audio.currentTime = 0;
     setPlaybackError('');
-    audio.play().then(() => setPlaying(true)).catch(() => setPlaybackError('Audio playback is unavailable in this browser.'));
+    audio.play().then(() => setPlaying(true)).catch(() => setPlaybackError('Timbre audio could not be played in this browser. Download the file or generate the answer again.'));
   }
 
   function toggleMute() {
@@ -201,7 +205,7 @@ export default function VoicePlaybackControls({
         </span>
       </div>
       <label className="playback-speed">Speed <select aria-label="Playback speed" value={speed} onChange={(event) => changeSpeed(event.target.value)}>{[0.75, 1, 1.25, 1.5, 2].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select></label>
-      {playbackError && <span className="playback-error" role="status">{playbackError}</span>}
+      {playbackError && <span className="playback-error" role="status">{playbackError} <a href={audioUrl} download="minimi-response.wav">Download audio</a></span>}
     </div>
   );
 }

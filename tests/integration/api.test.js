@@ -12,6 +12,21 @@ describe('HTTP API', () => {
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
   });
+  it('validates raw image bytes before sending them to Cloudinary', async () => {
+    const response = await request(app).post('/api/images').set('content-type', 'image/png').send(Buffer.from('not an image'));
+    expect(response.status).toBe(415);
+    expect(response.body.error.code).toBe('INVALID_FILE');
+  });
+  it('rejects a PDF with a mismatched file signature', async () => {
+    const response = await request(app).post('/api/files').set('content-type', 'application/pdf').send(Buffer.from('not a pdf'));
+    expect(response.status).toBe(415);
+    expect(response.body.error.code).toBe('INVALID_FILE');
+  });
+  it('rejects empty image-only chat turns', async () => {
+    const response = await request(app).post('/api/chat').send({ message: '', attachments: [] });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('INVALID_REQUEST');
+  });
   it('rejects weak signup credentials before accessing the database', async () => {
     const response = await request(app).post('/api/auth/signup').send({ email: 'not-an-email', password: 'short' });
     expect(response.status).toBe(400);
