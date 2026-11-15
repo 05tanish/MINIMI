@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import VoicePlaybackControls from './VoicePlaybackControls.jsx';
 
 export default function AudioPlayer({ src, base64, contentType = 'audio/wav' }) {
   const [url, setUrl] = useState(src || '');
@@ -36,5 +37,5 @@ export function SpeakAnswer({ text }) {
     } catch (cause) { setError(cause.message); }
     finally { setBusy(false); }
   }
-  return <div style={{ display: 'grid', gap: 6, marginTop: 8 }}><button type="button" disabled={busy} onClick={() => void speak()}>{busy ? 'Generating speech…' : 'Listen to answer'}</button>{error && <small role="alert">{error}</small>}{source && <AudioPlayer src={source} />}</div>;
+  return <div className="speak-answer" style={{ display: 'grid', gap: 6, marginTop: 8 }}><button type="button" disabled={busy} onClick={() => void speak()}>{busy ? 'Generating speech…' : source ? 'Regenerate audio' : 'Listen to answer'}</button>{error && <small role="alert">{error}</small>}{source && <VoicePlaybackControls audioUrl={source} autoPlay={false} />}</div>;
 }

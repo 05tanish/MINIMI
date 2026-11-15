@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import AudioWaveform from './AudioWaveform.jsx';
 import VoicePlaybackControls from './VoicePlaybackControls.jsx';
 import VoiceSettings from './VoiceSettings.jsx';
+
+const VoiceOrb = lazy(() => import('./VoiceOrb.jsx'));
 
 /* ── Research stage labels ───────────────────────────────── */
 const STAGE_LABELS = {
@@ -51,6 +53,30 @@ function finalizeSpokenAnswer(text) {
   if (!body) return '';
   const concise = body.split(/(?<=[.!?।])\s+/).filter(Boolean).slice(0, 2).join(' ').slice(0, 420).trim();
   return concise ? `${concise} Do you need more in-depth information? Let me know.` : '';
+}
+
+function VoiceAnswerContent({ message }) {
+  if (!message?.content) return null;
+  const sources = message.sources || [];
+  const renderInline = (line, lineIndex) => line.split(/(\[S\d+\])/g).map((part, index) => {
+    const id = /^\[S\d+\]$/.test(part) ? part.slice(1, -1) : '';
+    const source = id && sources.find((item) => item.id === id);
+    return source ? <a className="voice-citation" key={`${lineIndex}-${index}`} href={source.url} target="_blank" rel="noreferrer" aria-label={`Open source ${id}: ${source.title}`}>{part}</a> : <span key={`${lineIndex}-${index}`}>{part}</span>;
+  });
+  return <div className="voice-answer-copy">
+    <div className="voice-answer-label">Minimi’s answer</div>
+    <div className="voice-answer-text">{message.content.split('\n').map((line, index) => {
+      if (!line.trim()) return null;
+      if (line.startsWith('## ')) return <h2 key={index}>{renderInline(line.slice(3), index)}</h2>;
+      if (line.startsWith('### ')) return <h3 key={index}>{renderInline(line.slice(4), index)}</h3>;
+      return <p key={index}>{renderInline(line.replace(/^[-*+]\s+/, '• '), index)}</p>;
+    })}</div>
+    {sources.length > 0 && <div className="voice-source-list" aria-label="Answer sources">
+      {sources.map((source) => <a className="voice-source-card" href={source.url} target="_blank" rel="noreferrer" key={source.id}>
+        <span>{source.id}</span><div><b>{source.title || source.url}</b><small>{(() => { try { return new URL(source.url).hostname; } catch { return source.url; } })()}</small></div><i aria-hidden="true">↗</i>
+      </a>)}
+    </div>}
+  </div>;
 }
 
 /* ── Animated research stage dots ───────────────────────── */
@@ -213,6 +239,8 @@ export default function VoiceModeInterface({
   lastAssistantMessage = null,
   messages = [],
   findings = [],
+  researchTimeline = [],
+  onOpenConversation,
   error = '',
   onRetry,
   onSwitchToText,
@@ -238,6 +266,7 @@ export default function VoiceModeInterface({
   const [interruptKey, setInterruptKey] = useState(0);
   const [spokenAnswer, setSpokenAnswer] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [webglOrbEnabled, setWebglOrbEnabled] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const micStreamRef = useRef(null);
@@ -247,6 +276,20 @@ export default function VoiceModeInterface({
   const cancelledRecordingRef = useRef(false);
   const synthesizedMessageIdRef = useRef(null);
   const synthesisControllerRef = useRef(null);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches || localStorage.getItem('minimi_reduced_motion') === 'true';
+    const lowPower = (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2) || (navigator.deviceMemory && navigator.deviceMemory <= 2);
+    if (reducedMotion || lowPower) return;
+    const probe = document.createElement('canvas');
+    let supported = false;
+    try {
+      const context = probe.getContext('webgl2') || probe.getContext('webgl');
+      supported = Boolean(context);
+      context?.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch { /* the CSS orb remains available if the browser blocks WebGL */ }
+    setWebglOrbEnabled(supported);
+  }, []);
 
   // Clean up only when the interface unmounts; changing stream state must not stop recording.
   useEffect(() => {
@@ -657,14 +700,27 @@ export default function VoiceModeInterface({
           </div>
         </details>}
 
-        {(findings.length > 0 || busy) && <details className="voice-activity-panel" open={busy}>
-          <summary><span>Research activity</span><small>{busy ? (status || 'In progress') : `${findings.length} update${findings.length === 1 ? '' : 's'}`}</small></summary>
+        {(findings.length > 0 || busy || researchTimeline.length > 0) && <details className="voice-activity-panel" open={busy}>
+          <summary><span>Research activity</span><small>{busy ? (status || 'In progress') : `${findings.length || researchTimeline.length} update${(findings.length || researchTimeline.length) === 1 ? '' : 's'}`}</small></summary>
           <div className="voice-activity-list">
             {busy && <p className="activity-current"><span className="spinner" />{status || 'Preparing your answer…'}{statusDetail && <small>{statusDetail}</small>}</p>}
+            {researchTimeline.map((step, index) => <div className={`voice-timeline-step ${step.status}`} key={`${step.stage}-${index}`}>
+              <span aria-hidden="true">{step.status === 'failed' ? '!' : step.status === 'partial' ? '◐' : '·'}</span>
+              <div><b>{step.stage === 'memory' ? 'Retrieving previous conversations' : step.stage === 'search' ? 'Searching the web' : step.stage === 'compare' ? 'Comparing evidence and preparing the answer' : step.stage === 'understanding' ? 'Understanding the question' : 'Research update'}<em>{step.status === 'failed' ? 'Failed' : step.status === 'partial' ? 'Partial result' : step.status === 'active' ? 'In progress' : 'Finished'}</em></b><small>{step.detail}</small></div>
+            </div>)}
             {findings.map((item, index) => <section className="activity-finding" key={`${item.findingsType}-${index}`}>
               <b>{item.findingsType === 'memory' ? 'Past conversations retrieved' : item.findingsType === 'search' ? 'Web sources collected' : item.findingsType === 'diff' ? 'Historical comparison' : 'Research update'}</b>
               {item.summary && <p>{item.summary}</p>}
-              {item.items?.map((entry, j) => <p key={j}>{entry.url ? <a href={entry.url} target="_blank" rel="noreferrer">{entry.title || entry.url}</a> : entry.topic || entry.title || entry.snippet || `${item.items.length} results`}{entry.date && <time> · {new Date(entry.date).toLocaleDateString()}</time>}</p>)}
+              {item.findingsType === 'memory' && item.items?.map((entry, j) => <div className="voice-memory-item" key={j}><strong>{entry.topic || 'Previous conversation'}</strong>{entry.date && <time> · {new Date(entry.date).toLocaleDateString()}</time>}{entry.snippet && <span className="memory-snippet">{entry.snippet}</span>}{entry.conversationId && onOpenConversation && <button className="memory-open" type="button" onClick={() => onOpenConversation(entry.conversationId)}>Open conversation ↗</button>}</div>)}
+              {item.findingsType === 'diff' && item.items?.length > 0 && <div className="voice-diff-list">
+                {item.items.map((entry, j) => <article key={j}>
+                  <b>{entry.entity}{entry.attribute ? ` · ${entry.attribute}` : ''}</b>
+                  <div><span>Then</span><p>{entry.historicalValue ?? 'No historical value'}</p></div>
+                  <div><span>Now</span><p>{entry.currentValue ?? 'No current evidence'}</p></div>
+                  <small className={`diff-status ${entry.status || ''}`}>{String(entry.status || 'comparison').replaceAll('_', ' ')}</small>
+                </article>)}
+              </div>}
+              {item.findingsType !== 'diff' && item.items?.map((entry, j) => <p key={j}>{entry.url ? <a href={entry.url} target="_blank" rel="noreferrer">{entry.title || entry.url}</a> : entry.topic || entry.title || entry.snippet || `${item.items.length} results`}{entry.date && <time> · {new Date(entry.date).toLocaleDateString()}</time>}</p>)}
             </section>)}
           </div>
         </details>}
@@ -672,6 +728,15 @@ export default function VoiceModeInterface({
         {/* ── IDLE/DONE: Show last exchange as compact card ── */}
         {['idle', 'speaking', 'paused'].includes(statePhase) && lastAsstMsg && (
           <div className="voice-answer-card" style={{ background: '#f5f8f4', border: '1px solid #dde7db', borderRadius: '16px', padding: '14px 16px', marginBottom: '16px' }}>
+            <VoiceAnswerContent message={lastAsstMsg} />
+            {lastAsstMsg.diff?.length > 0 && <div className="voice-diff-list" aria-label="Historical comparison">
+              {lastAsstMsg.diff.map((entry, index) => <article key={index}>
+                <b>{entry.entity}{entry.attribute ? ` · ${entry.attribute}` : ''}</b>
+                <div><span>Then</span><p>{entry.historicalValue ?? 'No historical value'}</p></div>
+                <div><span>Now</span><p>{entry.currentValue ?? 'No current evidence'}</p></div>
+                <small className={`diff-status ${entry.status || ''}`}>{String(entry.status || 'comparison').replaceAll('_', ' ')}</small>
+              </article>)}
+            </div>}
             {synthesizing ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '12px', color: '#566e5f' }}>
                 <span className="spinner" /> Preparing your spoken answer…
@@ -704,7 +769,16 @@ export default function VoiceModeInterface({
 
         {/* ── Main voice card ─────────────────────────── */}
         <div
-          className="voice-card"
+          className={`voice-card voice-card-${statePhase}`}
+          onPointerMove={(event) => {
+            if (event.pointerType === 'touch' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            const x = (event.clientX - rect.left) / rect.width - 0.5;
+            const y = (event.clientY - rect.top) / rect.height - 0.5;
+            event.currentTarget.style.setProperty('--tilt-x', `${-y * 2.4}deg`);
+            event.currentTarget.style.setProperty('--tilt-y', `${x * 2.8}deg`);
+          }}
+          onPointerLeave={(event) => { event.currentTarget.style.setProperty('--tilt-x', '0deg'); event.currentTarget.style.setProperty('--tilt-y', '0deg'); }}
           style={{ background: '#fff', border: '1px solid #e2e8e1', borderRadius: '24px', padding: '32px 24px', boxShadow: '0 8px 30px rgba(36,59,53,.06)', textAlign: 'center' }}
         >
           {/* Waveform */}
@@ -713,7 +787,7 @@ export default function VoiceModeInterface({
           </div>
 
           {/* Big mic button */}
-          <div style={{ position: 'relative', display: 'inline-block', margin: '6px auto' }}>
+          <div className="voice-orb-stage" style={{ position: 'relative', display: 'inline-block', margin: '6px auto' }}>
             {recording && (
               <div
                 className="mic-pulse"
@@ -726,6 +800,7 @@ export default function VoiceModeInterface({
               onClick={recording ? stopRecording : startRecording}
               aria-label={recording ? 'Stop recording' : 'Tap to speak'}
               className="big-mic-btn"
+              data-state={statePhase}
               style={{
                 width: '88px',
                 height: '88px',
@@ -741,7 +816,8 @@ export default function VoiceModeInterface({
                 transition: 'all .2s cubic-bezier(.16,1,.3,1)'
               }}
             >
-              {recording ? '■' : transcribing ? '…' : '🎙'}
+              <span className="voice-orb-scene" aria-hidden="true">{webglOrbEnabled ? <Suspense fallback={<div className={`orb-css-fallback ${statePhase}`} />}><VoiceOrb state={statePhase} stream={recording ? micStream : null} /></Suspense> : <div className={`orb-css-fallback ${statePhase}`} />}</span>
+              {recording && <span className="orb-stop-glyph" aria-hidden="true">■</span>}
             </button>
           </div>
 

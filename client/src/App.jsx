@@ -70,15 +70,41 @@ function AuthScreen({ onAuthenticated }) {
   );
 }
 
+function CodeBlock({ code, language = '' }) {
+  const [copyState, setCopyState] = useState('Copy');
+  const keywords = /^(const|let|var|function|return|async|await|export|import|from|class|new|if|else|for|while|try|catch|throw|def|print|with|as|in|not|and|or|True|False|None|public|private|static|void|int|string|type|interface|extends|implements|yield)$/;
+  function highlight(line, lineIndex) {
+    const pattern = /(\/\/.*$|#.*$|\/\*.*?\*\/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b)/g;
+    const parts = [];
+    let last = 0;
+    for (const match of line.matchAll(pattern)) {
+      if (match.index > last) parts.push(line.slice(last, match.index));
+      const token = match[0];
+      const kind = /^(\/\/|#|\/\*)/.test(token) ? 'comment' : /^["'`]/.test(token) ? 'string' : /^\d/.test(token) ? 'number' : keywords.test(token) ? 'keyword' : 'identifier';
+      parts.push(<span className={`code-${kind}`} key={`${lineIndex}-${match.index}`}>{token}</span>);
+      last = match.index + token.length;
+    }
+    if (last < line.length) parts.push(line.slice(last));
+    return parts;
+  }
+  async function copy() {
+    try { await navigator.clipboard.writeText(code); setCopyState('Copied'); }
+    catch { setCopyState('Copy unavailable'); }
+    window.setTimeout(() => setCopyState('Copy'), 1400);
+  }
+  return <figure className="code-block"><figcaption><span>{language || 'CODE'}</span><button type="button" onClick={() => void copy()} aria-label="Copy code block">{copyState}</button></figcaption><pre><code>{code.split('\n').map((line, index) => <span className="code-line" key={index}>{highlight(line, index)}{'\n'}</span>)}</code></pre></figure>;
+}
+
 /* ─────────────────────── Markdown renderer ─────────────────────── */
 function renderText(text, sources = []) {
-  const inline = (line, keyPrefix) => line.split(/(\[S\d+\]|\*\*[^*]+\*\*|\*[^*]+\*)/g).map((part, i) => {
+  const inline = (line, keyPrefix) => line.split(/(\[S\d+\]|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g).map((part, i) => {
     if (/^\[S\d+\]$/.test(part)) {
       const source = sources.find((item) => item.id === part.slice(1, -1));
       return source
         ? <a className="cite" key={`${keyPrefix}-${i}`} href={source.url} target="_blank" rel="noreferrer" aria-label={`Open source ${part.slice(1, -1)}: ${source.title}`}>{part}</a>
         : <sup className="cite" key={`${keyPrefix}-${i}`}>{part}</sup>;
     }
+    if (/^`[^`]+`$/.test(part)) return <code className="inline-code" key={`${keyPrefix}-${i}`}>{part.slice(1, -1)}</code>;
     if (/^\*\*[^*]+\*\*$/.test(part)) return <strong key={`${keyPrefix}-${i}`}>{part.slice(2, -2)}</strong>;
     if (/^\*[^*]+\*$/.test(part)) return <em key={`${keyPrefix}-${i}`}>{part.slice(1, -1)}</em>;
     return <span key={`${keyPrefix}-${i}`}>{part}</span>;
@@ -89,6 +115,14 @@ function renderText(text, sources = []) {
   const isTableRule = (line) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line.trim());
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (line.startsWith('```')) {
+      const language = line.slice(3).trim();
+      const code = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith('```')) { code.push(lines[i]); i++; }
+      output.push(<CodeBlock key={`code-${i}`} code={code.join('\n')} language={language} />);
+      continue;
+    }
     if (i + 1 < lines.length && line.includes('|') && isTableRule(lines[i + 1])) {
       const headers = cells(line);
       const rows = [];
@@ -101,8 +135,18 @@ function renderText(text, sources = []) {
     if (line.startsWith('## ')) output.push(<h2 key={i}>{inline(line.slice(3), i)}</h2>);
     else if (line.startsWith('### ')) output.push(<h3 key={i}>{inline(line.slice(4), i)}</h3>);
     else if (line.trim() === '---') output.push(<hr key={i} />);
-    else if (/^\d+\. /.test(line)) output.push(<div className="answer-list-item" key={i}>{line.match(/^\d+/)[0]}. {inline(line.replace(/^\d+\. /, ''), i)}</div>);
-    else if (line.startsWith('- ')) output.push(<div className="answer-list-item" key={i}>• {inline(line.slice(2), i)}</div>);
+    else if (/^\d+\. /.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\d+\. /.test(lines[i])) { items.push(lines[i].replace(/^\d+\. /, '')); i++; }
+      i--;
+      output.push(<ol className="answer-list" key={`ol-${i}`}>{items.map((item, j) => <li key={j}>{inline(item, `ol-${i}-${j}`)}</li>)}</ol>);
+    }
+    else if (/^[-*] /.test(line)) {
+      const items = [];
+      while (i < lines.length && /^[-*] /.test(lines[i])) { items.push(lines[i].slice(2)); i++; }
+      i--;
+      output.push(<ul className="answer-list" key={`ul-${i}`}>{items.map((item, j) => <li key={j}>{inline(item, `ul-${i}-${j}`)}</li>)}</ul>);
+    }
     else output.push(line ? <p key={i}>{inline(line, i)}</p> : <br key={i} />);
   }
   return output;
@@ -134,21 +178,55 @@ function DiffTable({ entries }) {
 }
 
 /* ─────────────────────── Findings panel ─────────────────────── */
-function FindingsPanel({ findings }) {
-  if (!findings.length) return null;
-  return (
-    <details className="findings research-activity" open>
-      <summary>Research activity <span>{findings.length} update{findings.length === 1 ? '' : 's'}</span></summary>
+function SourceCard({ source, index }) {
+  let domain = source.url;
+  try { domain = new URL(source.url).hostname; } catch {}
+  return <details className="source-preview-card">
+    <summary><span className="source-id">{source.id || `S${index + 1}`}</span><span className="source-preview-heading"><b>{source.title || source.url}</b><small>{domain}{source.publishedAt && ` · Published ${new Date(source.publishedAt).toLocaleDateString()}`}</small></span><span className="source-expand-mark" aria-hidden="true">⌄</span></summary>
+    <div className="source-preview-body">
+      {source.snippet && <p>{source.snippet}</p>}
+      {source.retrievedAt && <small>Retrieved {new Date(source.retrievedAt).toLocaleDateString()}</small>}
+      <a href={source.url} target="_blank" rel="noreferrer">Open original source <span aria-hidden="true">↗</span></a>
+    </div>
+  </details>;
+}
+
+function ResearchTimeline({ timeline = [] }) {
+  if (!timeline.length) return null;
+  const labels = { understanding: 'Understanding the question', memory: 'Retrieving previous conversations', search: 'Searching the web', compare: 'Comparing evidence', answer: 'Preparing the response', research: 'Research update' };
+  return <ol className="research-timeline" aria-label="Research activity timeline">
+    {timeline.map((step, index) => <li className={`timeline-step ${step.status}`} key={`${step.stage}-${index}`}>
+      <span className="timeline-marker" aria-hidden="true">{step.status === 'finished' ? '·' : step.status === 'failed' ? '!' : step.status === 'partial' ? '◐' : <i />}</span>
+      <div><b>{labels[step.stage] || labels.research}<em>{step.status === 'finished' ? 'Finished' : step.status === 'failed' ? 'Failed' : step.status === 'partial' ? 'Partial result' : 'In progress'}</em></b>{step.detail && <p>{step.detail}</p>}{step.at && <time dateTime={step.at}>{new Date(step.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}</div>
+    </li>)}
+  </ol>;
+}
+
+function FindingsPanel({ findings, timeline, onOpenConversation }) {
+  const memory = findings.filter((item) => item.findingsType === 'memory');
+  const research = findings.filter((item) => item.findingsType !== 'memory');
+  if (!findings.length && !timeline.length) return null;
+  return <section className="research-panels" aria-label="Research details">
+    {memory.length > 0 && <details className="context-recalled">
+      <summary><span className="context-icon" aria-hidden="true">↶</span><span><b>Context recalled</b><small>Relevant details from previous conversations</small></span><em>{memory.reduce((count, item) => count + (item.items?.length || 0), 0)}</em></summary>
+      <div className="context-items">{memory.flatMap((group) => group.items || []).map((item, index) => <article className="context-item" key={`${item.conversationId}-${index}`}>
+        <div><b>{item.topic || 'Previous conversation'}</b>{item.date && <time dateTime={item.date}>{new Date(item.date).toLocaleDateString()}</time>}</div>
+        {item.snippet && <p>{item.snippet}</p>}
+        {item.conversationId && onOpenConversation && <button type="button" onClick={() => onOpenConversation(item.conversationId)}>Open conversation <span aria-hidden="true">↗</span></button>}
+      </article>)}</div>
+    </details>}
+    <details className="findings research-activity">
+      <summary><span>Research activity</span><small>{timeline.length ? `${timeline.length} steps` : `${research.length} evidence updates`}</small></summary>
       <div className="findings-body">
-      {findings.map((f, i) => {
-        if (f.findingsType === 'memory') return <div className="finding-group" key={i}><div className="finding-label">Past conversations</div>{f.items.map((item, j) => <div className="finding-item" key={j}><span>{item.topic}</span>{item.date && <time className="finding-date" dateTime={item.date}>{new Date(item.date).toLocaleDateString()}</time>}{item.snippet && <p>{item.snippet}</p>}</div>)}</div>;
-        if (f.findingsType === 'search') return <div className="finding-group" key={i}><div className="finding-label">Web research</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}{item.hasContent && <span className="finding-badge">page reviewed</span>}</div>)}</div>;
-        if (f.findingsType === 'diff') return <div className="finding-group" key={i}><div className="finding-label">📊 DIFF</div>{f.summary && <div className="finding-summary">{f.summary}</div>}<DiffTable entries={f.items} /></div>;
-        return null;
-      })}
+        <ResearchTimeline timeline={timeline} />
+        {research.map((f, i) => {
+          if (f.findingsType === 'search') return <div className="finding-group" key={i}><div className="finding-label">Sources collected</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.title || item.url}</a> : item.title}{item.hasContent && <span className="finding-badge">page reviewed</span>}</div>)}</div>;
+          if (f.findingsType === 'diff') return <div className="finding-group" key={i}><div className="finding-label">Historical comparison</div>{f.summary && <div className="finding-summary">{f.summary}</div>}<DiffTable entries={f.items} /></div>;
+          return null;
+        })}
       </div>
     </details>
-  );
+  </section>;
 }
 
 function dateGroupLabel(dateValue) {
@@ -199,18 +277,21 @@ export default function App() {
   const [conversationSearch, setConversationSearch] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia('(max-width: 760px)').matches);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(() => localStorage.getItem('minimi_reduced_motion') === 'true');
   const [pinnedIds, setPinnedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem('minimi_pinned_conversations') || '[]'); } catch { return []; }
   });
   const [copiedMessageId, setCopiedMessageId] = useState(null);
   const [conversationError, setConversationError] = useState('');
   const [input, setInput] = useState('');
+  const [audioToolsOpen, setAudioToolsOpen] = useState(false);
   const [status, setStatus] = useState('');
   const [researchStage, setResearchStage] = useState('');
   const [statusDetail, setStatusDetail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [findings, setFindings] = useState([]);
+  const [researchTimeline, setResearchTimeline] = useState([]);
 
   // ── Interaction mode & voice settings state ──
   const [interactionMode, setInteractionMode] = useState('voice'); // default → voice
@@ -219,6 +300,7 @@ export default function App() {
 
   const abort = useRef(null);
   const bottom = useRef(null);
+  const composerInput = useRef(null);
   const requestKey = useRef(null);
   const lastSequence = useRef(0);
 
@@ -239,7 +321,14 @@ export default function App() {
       const j = await r.json();
       if (!r.ok || !j.success) throw new Error(j.error?.message || 'Unable to load this conversation.');
       setId(cid);
-      setMessages(j.data.messages.map((m) => ({ ...m, sources: m.sources ?? [], diff: [], searchRounds: 0 })));
+      setMessages(j.data.messages.map((m) => ({
+        ...m,
+        sources: (m.sources ?? []).map((source, index) => ({ ...source, id: `S${index + 1}`, retrievedAt: source.retrievedAt || source.metadata?.retrievedAt })),
+        diff: [],
+        searchRounds: 0
+      })));
+      setFindings([]);
+      setResearchTimeline([]);
       setError('');
       setConversationError('');
     } catch (error) { setConversationError(error.message); }
@@ -276,6 +365,15 @@ export default function App() {
     } catch { setError('Clipboard access is unavailable in this browser.'); }
   }
 
+  async function shareAnswer(message) {
+    try {
+      if (navigator.share) await navigator.share({ title: 'Minimi research', text: message.content });
+      else await navigator.clipboard.writeText(message.content);
+    } catch (cause) {
+      if (cause.name !== 'AbortError') setError('Unable to share this answer from your browser.');
+    }
+  }
+
   async function deleteConversation(conversation) {
     if (!window.confirm(`Delete "${conversation.title}"? Its messages, saved sources, and memory will be permanently removed.`)) return;
     setDeletingId(conversation.id);
@@ -285,7 +383,7 @@ export default function App() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error?.message ?? 'Unable to delete conversation.');
       setConversations((items) => items.filter((item) => item.id !== conversation.id));
-      if (id === conversation.id) { setId(null); setMessages([]); setFindings([]); }
+      if (id === conversation.id) { setId(null); setMessages([]); setFindings([]); setResearchTimeline([]); }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -306,6 +404,15 @@ export default function App() {
 
   /* ── Auto-scroll ── */
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, status, findings]);
+  useEffect(() => {
+    if (!composerInput.current) return;
+    composerInput.current.style.height = 'auto';
+    composerInput.current.style.height = `${Math.min(composerInput.current.scrollHeight, 180)}px`;
+  }, [input]);
+  useEffect(() => {
+    document.documentElement.classList.toggle('reduce-motion', reducedMotion);
+    localStorage.setItem('minimi_reduced_motion', String(reducedMotion));
+  }, [reducedMotion]);
 
   /* ── Load preferences: server first, localStorage fallback ── */
   function applyLocalPreferences() {
@@ -389,6 +496,7 @@ export default function App() {
     setResearchStage('understanding');
     setStatusDetail('');
     setFindings([]);
+    setResearchTimeline([]);
 
     setMessages((old) => {
       const base = overrideMessage && old.at(-1)?.role === 'user' && old.at(-1)?.content === message
@@ -440,10 +548,21 @@ export default function App() {
           const event = JSON.parse(line.slice(6));
 
           if (event.type === 'conversation') setId(event.conversationId);
-          if (event.type === 'progress') { setResearchStage(event.stage || ''); setStatus(stages[event.stage] ?? 'Working'); setStatusDetail(event.detail ?? ''); }
+          if (event.type === 'progress') {
+            setResearchStage(event.stage || '');
+            setStatus(stages[event.stage] ?? 'Working');
+            setStatusDetail(event.detail ?? '');
+            setResearchTimeline((current) => {
+              const latest = current.at(-1);
+              const eventStatus = ['partial', 'failed'].includes(event.status) ? event.status : 'active';
+              if (latest?.stage === event.stage) return [...current.slice(0, -1), { ...latest, detail: event.detail || latest.detail, status: ['partial', 'failed'].includes(event.status) ? event.status : latest.status }];
+              return [...current.map((step) => step.status === 'active' ? { ...step, status: 'finished' } : step), { stage: event.stage || 'research', detail: event.detail || '', status: eventStatus, at: new Date().toISOString() }];
+            });
+          }
           if (event.type === 'findings') setFindings((old) => [...old, event]);
           if (event.type === 'delta') setMessages((old) => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content + event.text } : m));
           if (event.type === 'done') {
+            setResearchTimeline((current) => current.map((step) => step.status === 'active' ? { ...step, status: 'finished' } : step));
             requestKey.current = null;
             lastSequence.current = 0;
             setMessages((old) => old.map((m, i) => i === old.length - 1
@@ -451,18 +570,26 @@ export default function App() {
               : m
             ));
           }
-          if (event.type === 'error') throw new Error(event.message);
+          if (event.type === 'error') {
+            setResearchTimeline((current) => current.map((step) => step.status === 'active' ? { ...step, status: 'failed', detail: event.message || step.detail } : step));
+            throw new Error(event.message);
+          }
         }
       }
 
       setStatus('');
       setStatusDetail('');
       setResearchStage('');
-      setFindings([]);
       await loadList();
     } catch (e) {
       setError(e.name === 'AbortError' ? 'Request cancelled.' : e.message);
-      setMessages((old) => old.filter((m) => !m.streaming));
+      setResearchTimeline((current) => current.map((step) => step.status === 'active' ? { ...step, status: 'failed', detail: e.message || step.detail } : step));
+      setMessages((old) => {
+        const next = old.filter((m) => !m.streaming);
+        if (!overrideMessage && next.at(-1)?.role === 'user' && next.at(-1)?.content === message) next.pop();
+        return next;
+      });
+      if (!overrideMessage) setInput((current) => current || message);
     } finally {
       setBusy(false);
       setStatus('');
@@ -503,7 +630,7 @@ export default function App() {
         </div>
         <button type="button" className="sidebar-collapse" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">‹</button>
         </div>
-        <button className="new-chat" onClick={() => { setId(null); setMessages([]); setFindings([]); setError(''); setConversationError(''); }}>
+        <button className="new-chat" onClick={() => { setId(null); setMessages([]); setFindings([]); setResearchTimeline([]); setError(''); setConversationError(''); }}>
           ＋ <span>New conversation</span>
         </button>
         <label className="conversation-search">
@@ -525,7 +652,7 @@ export default function App() {
         </nav>
         {settingsOpen && (
           <section className="sidebar-settings" aria-label="Settings">
-            <div className="settings-heading"><strong>Voice settings</strong><button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button></div>
+            <div className="settings-heading"><strong>Voice & accessibility</strong><button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button></div>
             <VoiceSettings
               language={voiceSettings.language}
               onLanguageChange={(language) => handleVoiceSettingsUpdate({ ...voiceSettings, language })}
@@ -535,6 +662,7 @@ export default function App() {
               onSpeedChange={(speed) => handleVoiceSettingsUpdate({ ...voiceSettings, speed })}
             />
             <label className="autoplay-setting"><input type="checkbox" checked={voiceSettings.autoPlay} onChange={(event) => handleVoiceSettingsUpdate({ ...voiceSettings, autoPlay: event.target.checked })} /> Speak answers automatically</label>
+            <label className="autoplay-setting"><input type="checkbox" checked={reducedMotion} onChange={(event) => setReducedMotion(event.target.checked)} /> Reduce motion</label>
           </section>
         )}
         <div className="side-footer">
@@ -564,6 +692,7 @@ export default function App() {
               disabled={busy}
             />
           )}
+          <button className="header-settings" type="button" onClick={() => { setSettingsOpen(true); setSidebarCollapsed(false); }} aria-label="Open settings" title="Settings">⚙</button>
           <span className="connection"><i /> Private workspace</span>
         </header>
 
@@ -578,6 +707,7 @@ export default function App() {
               stage={researchStage}
               statusDetail={statusDetail}
               findings={findings}
+              researchTimeline={researchTimeline}
               lastAssistantMessage={lastAssistantMessage}
               messages={messages}
               error={error}
@@ -585,6 +715,7 @@ export default function App() {
               onSwitchToText={() => handleModeChange('text')}
               voiceSettings={voiceSettings}
               onUpdateVoiceSettings={handleVoiceSettingsUpdate}
+              onOpenConversation={(conversationId) => void loadConversation(conversationId)}
             />
           </div>
         )}
@@ -600,10 +731,15 @@ export default function App() {
                   <h1>Research that remembers<br />what matters.</h1>
                   <p className="subhead">Ask about past discussions, get current answers, and see how the evidence changed.</p>
                   <div className="suggestions">
-                    <button onClick={() => setInput('What did I ask you last week?')}>↗ &nbsp;What did I ask you last week?</button>
-                    <button onClick={() => setInput('Has the pricing we discussed changed since?')}>↗ &nbsp;Check a price against our discussion</button>
-                    <button onClick={() => setInput('Find the latest release notes for the product we discussed')}>↗ &nbsp;Find recent product updates</button>
+                    {[
+                      'What did I ask you last week?',
+                      'Has the pricing we discussed changed?',
+                      'Find the latest product release notes',
+                      'Compare current information with our previous discussion',
+                      'Continue my previous research'
+                    ].map((question) => <button key={question} type="button" disabled={busy} onClick={() => void submit(undefined, false, question)}><span aria-hidden="true">↗</span>{question}</button>)}
                   </div>
+                  {conversations.length > 0 && <div className="welcome-history"><span>Pick up where you left off</span>{conversations.slice(0, 3).map((conversation) => <button type="button" key={conversation.id} onClick={() => void loadConversation(conversation.id)}>{conversation.title}<span aria-hidden="true">→</span></button>)}</div>}
                 </div>
               ) : (
                 <div className="messages">
@@ -619,6 +755,7 @@ export default function App() {
                         {m.role === 'assistant' && !m.streaming && m.content && (
                           <div className="message-actions">
                             <button type="button" onClick={() => void copyAnswer(m)} aria-label="Copy answer">{copiedMessageId === (m.id || m.content.slice(0, 24)) ? 'Copied' : 'Copy'}</button>
+                            {typeof navigator.share === 'function' && <button type="button" onClick={() => void shareAnswer(m)} aria-label="Share answer">Share</button>}
                             {i === messages.length - 1 && <button type="button" disabled={busy} onClick={() => { const previous = messages.slice(0, i).reverse().find((item) => item.role === 'user')?.content; if (previous) void submit(undefined, false, previous); }}>Regenerate</button>}
                           </div>
                         )}
@@ -626,13 +763,7 @@ export default function App() {
                         {m.sources?.length > 0 && (
                           <div className="sources">
                             <div className="sources-title">SOURCES{m.searchRounds > 1 && <span className="rounds-badge">· {m.searchRounds} search rounds</span>}</div>
-                            {m.sources.map((s) => (
-                              <a href={s.url} target="_blank" rel="noreferrer" key={s.id}>
-                                <span className="source-id">{s.id}</span>
-                                <span><b>{s.title}</b><small>{(() => { try { return new URL(s.url).hostname; } catch { return s.url; } })()}{s.publishedAt && Number.isFinite(new Date(s.publishedAt).getTime()) && ` · ${new Date(s.publishedAt).toLocaleDateString()}`}</small></span>
-                                <span className="external">↗</span>
-                              </a>
-                            ))}
+                            {m.sources.map((s, sourceIndex) => <SourceCard key={s.id || s.url} source={s} index={sourceIndex} />)}
                           </div>
                         )}
                       </div>
@@ -641,32 +772,35 @@ export default function App() {
                 </div>
               )}
               {status && <div className="progress"><span className="spinner" />{status}{statusDetail && <span className="progress-detail">{statusDetail}</span>}</div>}
-              {busy && findings.length > 0 && <FindingsPanel findings={findings} />}
+              {(busy || findings.length > 0 || researchTimeline.length > 0) && <FindingsPanel findings={findings} timeline={researchTimeline} onOpenConversation={(conversationId) => void loadConversation(conversationId)} />}
               {error && (
                 <div className="error">
                   <span>{error}</span>
-                  <button onClick={() => { const prev = messages.filter((m) => m.role === 'user').at(-1)?.content ?? ''; setError(''); void submit(undefined, true, prev); }}>Retry</button>
+                  <button onClick={() => { const prev = input.trim() || messages.filter((m) => m.role === 'user').at(-1)?.content || ''; setError(''); void submit(undefined, true, prev); }}>Retry</button>
                 </div>
               )}
               <div ref={bottom} />
             </section>
 
             {/* Text composer */}
-            <form className="composer" onSubmit={submit}>
-              <details style={{ marginBottom: 8 }}>
-                <summary style={{ cursor: 'pointer', fontSize: 12, color: '#667085' }}>Speak or upload a recording</summary>
-                <AudioUpload conversationId={id} onTranscript={(text) => setInput(text)} onError={setError} />
-              </details>
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(e); } }}
-                placeholder="Ask about a past conversation or research something new…"
-                rows="1"
-              />
+            <form className={`composer ${input ? 'has-input' : ''}`} onSubmit={submit}>
+              {audioToolsOpen && <div className="composer-tools"><AudioUpload conversationId={id} onTranscript={(text) => { setInput(text); setAudioToolsOpen(false); }} onError={setError} /></div>}
+              <div className="composer-input-row">
+                <button className="composer-attach" type="button" onClick={() => setAudioToolsOpen((open) => !open)} aria-expanded={audioToolsOpen} aria-label={audioToolsOpen ? 'Close audio input tools' : 'Add audio or record a voice question'} title="Add audio or record voice">{audioToolsOpen ? '×' : '+'}</button>
+                <textarea
+                  ref={composerInput}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(e); } }}
+                  placeholder="Ask Minimi to research or remember…"
+                  rows="1"
+                  aria-label="Message Minimi"
+                />
+              </div>
               <div className="composer-bottom">
-                <span>Enter to send · Shift + Enter for a new line</span>
-                <button type="submit" disabled={busy || !input.trim()} aria-label="Send message">{busy ? '…' : '↑'}</button>
+                <span className="research-mode-indicator"><i aria-hidden="true" /> Context & web research</span>
+                <span className="composer-shortcut">Enter to send · Shift + Enter for a new line</span>
+                <button type="submit" disabled={busy || !input.trim()} aria-label={busy ? 'Research in progress' : 'Send message'}>{busy ? <span className="spinner" /> : '↑'}</button>
               </div>
             </form>
 

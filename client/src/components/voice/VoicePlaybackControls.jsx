@@ -14,11 +14,15 @@ export default function VoicePlaybackControls({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [playbackError, setPlaybackError] = useState('');
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !audioUrl) return;
 
+    setCurrentTime(0);
+    setDuration(0);
+    setPlaybackError('');
     audio.src = audioUrl;
     audio.load();
 
@@ -37,12 +41,14 @@ export default function VoicePlaybackControls({
     };
     const onTimeUpdate = () => setCurrentTime(audio.currentTime);
     const onLoadedMetadata = () => setDuration(audio.duration || 0);
+    const onError = () => setPlaybackError('This response audio could not be played. Try generating it again.');
 
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('timeupdate', onTimeUpdate);
     audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    audio.addEventListener('error', onError);
 
     return () => {
       audio.pause();
@@ -51,6 +57,7 @@ export default function VoicePlaybackControls({
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('timeupdate', onTimeUpdate);
       audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+      audio.removeEventListener('error', onError);
     };
   }, [audioUrl, autoPlay]);
 
@@ -68,7 +75,8 @@ export default function VoicePlaybackControls({
     if (playing) {
       audio.pause();
     } else {
-      audio.play().catch(() => {});
+      setPlaybackError('');
+      audio.play().catch(() => setPlaybackError('Audio playback is unavailable in this browser.'));
     }
   }
 
@@ -76,7 +84,8 @@ export default function VoicePlaybackControls({
     const audio = audioRef.current;
     if (!audio) return;
     audio.currentTime = 0;
-    audio.play().then(() => setPlaying(true)).catch(() => {});
+    setPlaybackError('');
+    audio.play().then(() => setPlaying(true)).catch(() => setPlaybackError('Audio playback is unavailable in this browser.'));
   }
 
   function toggleMute() {
@@ -124,6 +133,7 @@ export default function VoicePlaybackControls({
         margin: '8px 0 12px'
       }}
       aria-label="Voice playback controls"
+      role="group"
     >
       <audio ref={audioRef} preload="metadata" />
 
@@ -191,6 +201,7 @@ export default function VoicePlaybackControls({
         </span>
       </div>
       <label className="playback-speed">Speed <select aria-label="Playback speed" value={speed} onChange={(event) => changeSpeed(event.target.value)}>{[0.75, 1, 1.25, 1.5, 2].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select></label>
+      {playbackError && <span className="playback-error" role="status">{playbackError}</span>}
     </div>
   );
 }

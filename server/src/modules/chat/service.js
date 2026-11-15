@@ -106,7 +106,10 @@ async function executeChatTurn({ turn, onEvent }) {
         onEvent({ type: 'findings', findingsType: 'memory', items: memory.chunks.map((c) => ({ topic: c.topic, date: c.startAt, conversationId: c.conversationId, snippet: c.content.slice(0, 120) })) });
         onEvent({ type: 'progress', stage: 'memory', detail: `Found ${memory.chunks.length} relevant conversation${memory.chunks.length > 1 ? 's' : ''}` });
       }
-    } catch (error) { logger.warn({ code: error.code }, 'Memory retrieval failed'); }
+    } catch (error) {
+      logger.warn({ code: error.code }, 'Memory retrieval failed');
+      onEvent({ type: 'progress', stage: 'memory', status: 'failed', detail: 'Previous conversation context could not be retrieved.' });
+    }
   }
 
   // 3. Adaptive query planning: generate search queries informed by memory
@@ -137,6 +140,16 @@ async function executeChatTurn({ turn, onEvent }) {
         onEvent({ type: 'findings', findingsType: 'search', items: search.sources.slice(0, 10).map((s) => ({ title: s.title, url: s.url, hasContent: Boolean(s.extractedContent) })) });
       }
     } catch (error) { search.failures.push({ error: error.code ?? 'SEARCH_FAILED' }); }
+    if (search.failures.length) {
+      onEvent({
+        type: 'progress',
+        stage: 'search',
+        status: search.sources.length ? 'partial' : 'failed',
+        detail: search.sources.length
+          ? `Found ${search.sources.length} sources; some searches did not complete.`
+          : 'Web search could not be completed.'
+      });
+    }
   }
 
   const sources = search.sources.map((s, i) => ({ ...s, id: `S${i + 1}` }));
@@ -160,7 +173,7 @@ async function executeChatTurn({ turn, onEvent }) {
       }
     } catch (error) {
       logger.warn({ code: error.code ?? error.name }, 'Claim extraction or diff failed');
-      onEvent({ type: 'progress', stage: 'compare', detail: 'Comparison unavailable, using raw evidence' });
+      onEvent({ type: 'progress', stage: 'compare', status: 'partial', detail: 'Comparison unavailable; using the available evidence.' });
     }
   }
 
