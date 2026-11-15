@@ -3,6 +3,7 @@ import AudioUpload from './components/jobs/AudioUpload.jsx';
 import { SpeakAnswer } from './components/voice/AudioPlayer.jsx';
 import InteractionModeSwitcher from './components/voice/InteractionModeSwitcher.jsx';
 import VoiceModeInterface from './components/voice/VoiceModeInterface.jsx';
+import VoiceSettings from './components/voice/VoiceSettings.jsx';
 
 const stages = {
   understanding: 'Understanding your question',
@@ -15,7 +16,7 @@ const stages = {
 const LS_MODE_KEY = 'minimi_interaction_mode';
 const LS_VOICE_KEY = 'minimi_voice_settings';
 
-const DEFAULT_VOICE_SETTINGS = { voice: 'Shivani', language: 'indic-auto', autoPlay: true };
+const DEFAULT_VOICE_SETTINGS = { voice: 'Shivani', language: 'indic-auto', autoPlay: true, speed: 1 };
 
 const apiFetch = (url, options = {}) =>
   fetch(url, { credentials: 'include', ...options, headers: { ...(options.headers ?? {}) } });
@@ -70,9 +71,14 @@ function AuthScreen({ onAuthenticated }) {
 }
 
 /* ─────────────────────── Markdown renderer ─────────────────────── */
-function renderText(text) {
+function renderText(text, sources = []) {
   const inline = (line, keyPrefix) => line.split(/(\[S\d+\]|\*\*[^*]+\*\*|\*[^*]+\*)/g).map((part, i) => {
-    if (/^\[S\d+\]$/.test(part)) return <sup className="cite" key={`${keyPrefix}-${i}`}>{part}</sup>;
+    if (/^\[S\d+\]$/.test(part)) {
+      const source = sources.find((item) => item.id === part.slice(1, -1));
+      return source
+        ? <a className="cite" key={`${keyPrefix}-${i}`} href={source.url} target="_blank" rel="noreferrer" aria-label={`Open source ${part.slice(1, -1)}: ${source.title}`}>{part}</a>
+        : <sup className="cite" key={`${keyPrefix}-${i}`}>{part}</sup>;
+    }
     if (/^\*\*[^*]+\*\*$/.test(part)) return <strong key={`${keyPrefix}-${i}`}>{part.slice(2, -2)}</strong>;
     if (/^\*[^*]+\*$/.test(part)) return <em key={`${keyPrefix}-${i}`}>{part.slice(1, -1)}</em>;
     return <span key={`${keyPrefix}-${i}`}>{part}</span>;
@@ -131,13 +137,53 @@ function DiffTable({ entries }) {
 function FindingsPanel({ findings }) {
   if (!findings.length) return null;
   return (
-    <div className="findings">
+    <details className="findings research-activity" open>
+      <summary>Research activity <span>{findings.length} update{findings.length === 1 ? '' : 's'}</span></summary>
+      <div className="findings-body">
       {findings.map((f, i) => {
-        if (f.findingsType === 'memory') return <div className="finding-group" key={i}><div className="finding-label">📖 MEMORY</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.topic} {item.date && <span className="finding-date">· {new Date(item.date).toLocaleDateString()}</span>}</div>)}</div>;
-        if (f.findingsType === 'search') return <div className="finding-group" key={i}><div className="finding-label">🔍 WEB</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.title}{item.hasContent && <span className="finding-badge">full page</span>}</div>)}</div>;
+        if (f.findingsType === 'memory') return <div className="finding-group" key={i}><div className="finding-label">Past conversations</div>{f.items.map((item, j) => <div className="finding-item" key={j}><span>{item.topic}</span>{item.date && <time className="finding-date" dateTime={item.date}>{new Date(item.date).toLocaleDateString()}</time>}{item.snippet && <p>{item.snippet}</p>}</div>)}</div>;
+        if (f.findingsType === 'search') return <div className="finding-group" key={i}><div className="finding-label">Web research</div>{f.items.map((item, j) => <div className="finding-item" key={j}>{item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}{item.hasContent && <span className="finding-badge">page reviewed</span>}</div>)}</div>;
         if (f.findingsType === 'diff') return <div className="finding-group" key={i}><div className="finding-label">📊 DIFF</div>{f.summary && <div className="finding-summary">{f.summary}</div>}<DiffTable entries={f.items} /></div>;
         return null;
       })}
+      </div>
+    </details>
+  );
+}
+
+function dateGroupLabel(dateValue) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return 'Earlier';
+  const today = new Date();
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const days = Math.round((startToday - startDate) / 86400000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return 'Previous 7 days';
+  if (days < 30) return 'Previous 30 days';
+  return 'Earlier';
+}
+
+function groupConversations(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const group = dateGroupLabel(item.updatedAt || item.createdAt);
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(item);
+  }
+  return groups;
+}
+
+function ConversationItem({ conversation, active, pinned, deleting, renaming, onOpen, onPin, onRename, onDelete }) {
+  return (
+    <div className={`conversation-row ${active ? 'active' : ''}`}>
+      <button className="conversation" onClick={onOpen} title={conversation.title} aria-current={active ? 'page' : undefined}>{conversation.title}</button>
+      <div className="conversation-actions">
+        <button type="button" disabled={renaming} onClick={onRename} aria-label={`Rename ${conversation.title}`} title="Rename">✎</button>
+        <button type="button" onClick={onPin} aria-label={`${pinned ? 'Unpin' : 'Pin'} ${conversation.title}`} aria-pressed={pinned} title={pinned ? 'Unpin' : 'Pin'}>{pinned ? '★' : '☆'}</button>
+        <button type="button" disabled={deleting} onClick={onDelete} aria-label={`Delete ${conversation.title}`} title="Delete">{deleting ? '…' : '×'}</button>
+      </div>
     </div>
   );
 }
@@ -149,8 +195,18 @@ export default function App() {
   const [id, setId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+  const [conversationSearch, setConversationSearch] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia('(max-width: 760px)').matches);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pinnedIds, setPinnedIds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('minimi_pinned_conversations') || '[]'); } catch { return []; }
+  });
+  const [copiedMessageId, setCopiedMessageId] = useState(null);
+  const [conversationError, setConversationError] = useState('');
   const [input, setInput] = useState('');
   const [status, setStatus] = useState('');
+  const [researchStage, setResearchStage] = useState('');
   const [statusDetail, setStatusDetail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -171,18 +227,53 @@ export default function App() {
     try {
       const r = await apiFetch('/api/conversations');
       const j = await r.json();
-      if (j.success) setConversations(j.data.items);
-    } catch {}
+      if (!r.ok || !j.success) throw new Error(j.error?.message || 'Unable to load conversations.');
+      setConversations(j.data.items);
+      setConversationError('');
+    } catch (error) { setConversationError(error.message); }
   }
 
   async function loadConversation(cid) {
-    const r = await apiFetch(`/api/conversations/${cid}`);
-    const j = await r.json();
-    if (j.success) {
+    try {
+      const r = await apiFetch(`/api/conversations/${cid}`);
+      const j = await r.json();
+      if (!r.ok || !j.success) throw new Error(j.error?.message || 'Unable to load this conversation.');
       setId(cid);
       setMessages(j.data.messages.map((m) => ({ ...m, sources: m.sources ?? [], diff: [], searchRounds: 0 })));
       setError('');
-    }
+      setConversationError('');
+    } catch (error) { setConversationError(error.message); }
+  }
+
+  async function renameConversation(conversation) {
+    const title = window.prompt('Rename conversation', conversation.title)?.trim();
+    if (!title || title === conversation.title) return;
+    setRenamingId(conversation.id);
+    try {
+      const response = await apiFetch(`/api/conversations/${conversation.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message || 'Unable to rename conversation.');
+      setConversations((items) => items.map((item) => item.id === conversation.id ? { ...item, title } : item));
+    } catch (error) { setConversationError(error.message); }
+    finally { setRenamingId(null); }
+  }
+
+  function togglePinned(conversationId) {
+    setPinnedIds((current) => {
+      const next = current.includes(conversationId) ? current.filter((value) => value !== conversationId) : [...current, conversationId];
+      localStorage.setItem('minimi_pinned_conversations', JSON.stringify(next));
+      return next;
+    });
+  }
+
+  async function copyAnswer(message) {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedMessageId(message.id || message.content.slice(0, 24));
+      window.setTimeout(() => setCopiedMessageId(null), 1600);
+    } catch { setError('Clipboard access is unavailable in this browser.'); }
   }
 
   async function deleteConversation(conversation) {
@@ -217,15 +308,16 @@ export default function App() {
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, status, findings]);
 
   /* ── Load preferences: server first, localStorage fallback ── */
+  function applyLocalPreferences() {
+    const savedMode = localStorage.getItem(LS_MODE_KEY);
+    if (savedMode === 'text' || savedMode === 'voice') setInteractionMode(savedMode);
+    try { setVoiceSettings({ ...DEFAULT_VOICE_SETTINGS, ...JSON.parse(localStorage.getItem(LS_VOICE_KEY) || '{}') }); } catch {}
+  }
+
   useEffect(() => {
     if (!currentUser) {
       // Not authenticated – use localStorage only
-      const savedMode = localStorage.getItem(LS_MODE_KEY);
-      const savedVoice = localStorage.getItem(LS_VOICE_KEY);
-      if (savedMode === 'text' || savedMode === 'voice') setInteractionMode(savedMode);
-      if (savedVoice) {
-        try { setVoiceSettings({ ...DEFAULT_VOICE_SETTINGS, ...JSON.parse(savedVoice) }); } catch {}
-      }
+      applyLocalPreferences();
       setPrefsLoaded(true);
       return;
     }
@@ -235,22 +327,21 @@ export default function App() {
       .then((j) => {
         if (j?.success && j.data) {
           const { interactionMode: mode, voice, language, autoPlay } = j.data;
+          let localSettings = {};
+          try { localSettings = JSON.parse(localStorage.getItem(LS_VOICE_KEY) || '{}'); } catch {}
           if (mode === 'text' || mode === 'voice') setInteractionMode(mode);
           setVoiceSettings({
+            ...DEFAULT_VOICE_SETTINGS,
+            ...localSettings,
             voice: voice || DEFAULT_VOICE_SETTINGS.voice,
             language: language || DEFAULT_VOICE_SETTINGS.language,
             autoPlay: autoPlay ?? DEFAULT_VOICE_SETTINGS.autoPlay
           });
         } else {
-          // Fallback to localStorage
-          const savedMode = localStorage.getItem(LS_MODE_KEY);
-          if (savedMode === 'text' || savedMode === 'voice') setInteractionMode(savedMode);
+          applyLocalPreferences();
         }
       })
-      .catch(() => {
-        const savedMode = localStorage.getItem(LS_MODE_KEY);
-        if (savedMode === 'text' || savedMode === 'voice') setInteractionMode(savedMode);
-      })
+      .catch(applyLocalPreferences)
       .finally(() => setPrefsLoaded(true));
   }, [currentUser]);
 
@@ -295,6 +386,7 @@ export default function App() {
     setError('');
     setBusy(true);
     setStatus(stages.understanding);
+    setResearchStage('understanding');
     setStatusDetail('');
     setFindings([]);
 
@@ -348,14 +440,14 @@ export default function App() {
           const event = JSON.parse(line.slice(6));
 
           if (event.type === 'conversation') setId(event.conversationId);
-          if (event.type === 'progress') { setStatus(stages[event.stage] ?? 'Working'); setStatusDetail(event.detail ?? ''); }
+          if (event.type === 'progress') { setResearchStage(event.stage || ''); setStatus(stages[event.stage] ?? 'Working'); setStatusDetail(event.detail ?? ''); }
           if (event.type === 'findings') setFindings((old) => [...old, event]);
           if (event.type === 'delta') setMessages((old) => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content + event.text } : m));
           if (event.type === 'done') {
             requestKey.current = null;
             lastSequence.current = 0;
             setMessages((old) => old.map((m, i) => i === old.length - 1
-              ? { ...m, content: event.answer, sources: event.sources, diff: event.diff ?? [], diffSummary: event.diffSummary, searchRounds: event.searchRounds ?? 0, streaming: false }
+              ? { ...m, content: event.answer, sources: event.sources, diff: event.diff ?? [], diffSummary: event.diffSummary, searchRounds: event.searchRounds ?? 0, createdAt: new Date().toISOString(), streaming: false }
               : m
             ));
           }
@@ -365,6 +457,7 @@ export default function App() {
 
       setStatus('');
       setStatusDetail('');
+      setResearchStage('');
       setFindings([]);
       await loadList();
     } catch (e) {
@@ -374,6 +467,7 @@ export default function App() {
       setBusy(false);
       setStatus('');
       setStatusDetail('');
+      setResearchStage('');
       abort.current = null;
     }
   }
@@ -386,6 +480,11 @@ export default function App() {
     return null;
   })();
 
+  const visibleConversations = conversations.filter((conversation) => conversation.title.toLowerCase().includes(conversationSearch.trim().toLowerCase()));
+  const pinnedConversations = visibleConversations.filter((conversation) => pinnedIds.includes(conversation.id));
+  const recentConversations = visibleConversations.filter((conversation) => !pinnedIds.includes(conversation.id));
+  const recentGroups = groupConversations(recentConversations);
+
   /* ── Loading state ── */
   if (currentUser === undefined) {
     return <main className="auth-shell"><div className="auth-card">Checking your session…</div></main>;
@@ -394,29 +493,53 @@ export default function App() {
 
   /* ── Main layout ── */
   return (
-    <div className="shell">
+    <div className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       {/* Sidebar */}
       <aside className="sidebar">
+        <div className="sidebar-brand-row">
         <div className="brand">
           <div className="mark">m</div>
           <div><b>minimi</b><small>RESEARCH</small></div>
         </div>
-        <button className="new-chat" onClick={() => { setId(null); setMessages([]); setError(''); }}>
+        <button type="button" className="sidebar-collapse" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">‹</button>
+        </div>
+        <button className="new-chat" onClick={() => { setId(null); setMessages([]); setFindings([]); setError(''); setConversationError(''); }}>
           ＋ <span>New conversation</span>
         </button>
-        <div className="side-label">RECENT</div>
-        <nav>
-          {conversations.map((c) => (
-            <div className={`conversation-row ${id === c.id ? 'active' : ''}`} key={c.id}>
-              <button className="conversation" onClick={() => loadConversation(c.id)} title={c.title}>{c.title}</button>
-              <button className="conversation-delete" disabled={deletingId === c.id} onClick={() => deleteConversation(c)} aria-label={`Delete ${c.title}`} title="Delete conversation">
-                {deletingId === c.id ? '…' : '×'}
-              </button>
-            </div>
+        <label className="conversation-search">
+          <span aria-hidden="true">⌕</span>
+          <input value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} placeholder="Search conversations" aria-label="Search conversations" />
+        </label>
+        <nav className="conversation-list" aria-label="Conversation history">
+          {pinnedConversations.length > 0 && <div className="side-label">PINNED</div>}
+          {pinnedConversations.map((conversation) => <ConversationItem key={conversation.id} conversation={conversation} active={id === conversation.id} pinned deleting={deletingId === conversation.id} renaming={renamingId === conversation.id} onOpen={() => void loadConversation(conversation.id)} onPin={() => togglePinned(conversation.id)} onRename={() => void renameConversation(conversation)} onDelete={() => void deleteConversation(conversation)} />)}
+          {recentGroups.size > 0 && <div className="side-label">RECENT</div>}
+          {[...recentGroups.entries()].map(([group, items]) => (
+            <section className="conversation-group" key={group}>
+              <h2>{group}</h2>
+              {items.map((conversation) => <ConversationItem key={conversation.id} conversation={conversation} active={id === conversation.id} pinned={false} deleting={deletingId === conversation.id} renaming={renamingId === conversation.id} onOpen={() => void loadConversation(conversation.id)} onPin={() => togglePinned(conversation.id)} onRename={() => void renameConversation(conversation)} onDelete={() => void deleteConversation(conversation)} />)}
+            </section>
           ))}
+          {!visibleConversations.length && <div className="conversation-empty">{conversationSearch ? 'No conversations match.' : 'Your conversations will appear here.'}</div>}
+          {conversationError && <div className="conversation-error" role="alert">{conversationError}<button type="button" onClick={() => void loadList()}>Retry</button></div>}
         </nav>
+        {settingsOpen && (
+          <section className="sidebar-settings" aria-label="Settings">
+            <div className="settings-heading"><strong>Voice settings</strong><button type="button" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button></div>
+            <VoiceSettings
+              language={voiceSettings.language}
+              onLanguageChange={(language) => handleVoiceSettingsUpdate({ ...voiceSettings, language })}
+              voice={voiceSettings.voice}
+              onVoiceChange={(voice) => handleVoiceSettingsUpdate({ ...voiceSettings, voice })}
+              speed={voiceSettings.speed}
+              onSpeedChange={(speed) => handleVoiceSettingsUpdate({ ...voiceSettings, speed })}
+            />
+            <label className="autoplay-setting"><input type="checkbox" checked={voiceSettings.autoPlay} onChange={(event) => handleVoiceSettingsUpdate({ ...voiceSettings, autoPlay: event.target.checked })} /> Speak answers automatically</label>
+          </section>
+        )}
         <div className="side-footer">
-          <span className="dot" /> {currentUser.email}
+          <span className="dot" /> <span className="account-email">{currentUser.email}</span>
+          <button className="settings-toggle" type="button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen}>⚙ <span>Settings</span></button>
           <button className="auth-switch" onClick={async () => {
             await apiFetch('/api/auth/logout', { method: 'POST' });
             setCurrentUser(null);
@@ -426,11 +549,13 @@ export default function App() {
           }}>Sign out</button>
         </div>
       </aside>
+      {!sidebarCollapsed && <button className="sidebar-overlay" type="button" aria-label="Close sidebar" onClick={() => setSidebarCollapsed(true)} />}
 
       {/* Main content */}
       <main className="main">
         {/* Top bar with mode switcher */}
         <header className="topbar">
+          <button className="sidebar-expand" type="button" onClick={() => setSidebarCollapsed((collapsed) => !collapsed)} aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>☰</button>
           <div className="mobile-brand">minimi <span>research</span></div>
           {prefsLoaded && (
             <InteractionModeSwitcher
@@ -450,7 +575,9 @@ export default function App() {
               onSendMessage={(text) => void submit(undefined, false, text)}
               busy={busy}
               status={status}
+              stage={researchStage}
               statusDetail={statusDetail}
+              findings={findings}
               lastAssistantMessage={lastAssistantMessage}
               messages={messages}
               error={error}
@@ -485,9 +612,16 @@ export default function App() {
                       <div className="avatar">{m.role === 'user' ? 'Y' : '✳'}</div>
                       <div className="bubble">
                         <div className="role-label">{m.role === 'user' ? 'YOU' : 'MINIMI'}</div>
-                        <div className="content">{renderText(m.content)}{m.streaming && <span className="cursor" />}</div>
+                        <div className="content">{renderText(m.content, m.sources)}{m.streaming && <span className="cursor" />}</div>
+                        {!m.streaming && m.createdAt && <time className="message-time" dateTime={m.createdAt}>{new Date(m.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>}
                         {/* Optional "Listen" button in text mode — uses Gnani Timbre */}
                         {m.role === 'assistant' && !m.streaming && m.content && <SpeakAnswer text={m.content} />}
+                        {m.role === 'assistant' && !m.streaming && m.content && (
+                          <div className="message-actions">
+                            <button type="button" onClick={() => void copyAnswer(m)} aria-label="Copy answer">{copiedMessageId === (m.id || m.content.slice(0, 24)) ? 'Copied' : 'Copy'}</button>
+                            {i === messages.length - 1 && <button type="button" disabled={busy} onClick={() => { const previous = messages.slice(0, i).reverse().find((item) => item.role === 'user')?.content; if (previous) void submit(undefined, false, previous); }}>Regenerate</button>}
+                          </div>
+                        )}
                         {m.diff?.length > 0 && <DiffTable entries={m.diff} />}
                         {m.sources?.length > 0 && (
                           <div className="sources">
@@ -495,7 +629,7 @@ export default function App() {
                             {m.sources.map((s) => (
                               <a href={s.url} target="_blank" rel="noreferrer" key={s.id}>
                                 <span className="source-id">{s.id}</span>
-                                <span><b>{s.title}</b><small>{(() => { try { return new URL(s.url).hostname; } catch { return s.url; } })()}</small></span>
+                                <span><b>{s.title}</b><small>{(() => { try { return new URL(s.url).hostname; } catch { return s.url; } })()}{s.publishedAt && Number.isFinite(new Date(s.publishedAt).getTime()) && ` · ${new Date(s.publishedAt).toLocaleDateString()}`}</small></span>
                                 <span className="external">↗</span>
                               </a>
                             ))}

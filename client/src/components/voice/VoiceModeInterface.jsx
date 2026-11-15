@@ -13,34 +13,44 @@ const STAGE_LABELS = {
 };
 
 function formatForSpeech(answer) {
-  const lines = answer
+  const body = answer
     .replace(/```[\s\S]*?```/g, '')
     .replace(/\[S\d+\]/g, '')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1')
-    .replace(/^\s*[-*_]{3,}\s*$/gm, '')
-    .split('\n')
-    .map((line) => {
-      const heading = line.match(/^\s*#{1,6}\s+(.+)$/);
-      if (heading) return `${heading[1].replace(/[*_`]/g, '')}.`;
-      const bullet = line.match(/^\s*(?:[-*+]\s+|\d+[.)]\s+)(.+)$/);
-      if (bullet) return `${bullet[1]}.`;
-      return line;
-    });
-
-  const body = lines.join('\n')
-    .replace(/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/gm, '')
-    .replace(/\|/g, ', ')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/^#{1,6}\s*(?:research summary|answer|summary)\s*$/gim, '')
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/__(.*?)__/g, '$1')
     .replace(/_(.*?)_/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
-    .replace(/https?:\/\/\S+/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/gm, '')
     .replace(/^\s*(?:Sources|References)\s*:?\s*$/gim, '')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\|/g, ', ')
+    .replace(/\s+/g, ' ')
     .trim();
+  const concise = body.split(/(?<=[.!?।])\s+/).filter(Boolean).slice(0, 2).join(' ').slice(0, 420).trim();
+  return concise ? `${concise} Do you need more in-depth information? Let me know.` : '';
+}
 
-  return body ? `Here’s what I found. ${body}` : '';
+function finalizeSpokenAnswer(text) {
+  const body = text
+    .replace(/\[S\d+\]/g, '')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^\s*(?:#{1,6}\s*)?(?:sources|references)\s*:?\s*[\s\S]*$/gim, '')
+    .replace(/^(?:(?:short answer|answer)\s*[:.\-]\s*|certainly[,.]?\s*|sure[,.]?\s*|in summary[,.]?\s*|to summarize[,.]?\s*|here(?:'|’)s what i found[,.]?\s*|here is what i found[,.]?\s*|here(?:'|’)s the answer[,.]?\s*|here is the answer[,.]?\s*|here is the complete answer[,.]?\s*|the concise answer is[,:]?\s*)/i, '')
+    .replace(/\s*(?:if you want (?:the )?full details,? switch to text mode\.?|for full details,? switch to text mode\.?|do you need more (?:detailed|in-depth) information\?? let me know\.?|would you like more (?:detailed|in-depth) information\?? let me know\.?)\s*$/i, '')
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!body) return '';
+  const concise = body.split(/(?<=[.!?।])\s+/).filter(Boolean).slice(0, 2).join(' ').slice(0, 420).trim();
+  return concise ? `${concise} Do you need more in-depth information? Let me know.` : '';
 }
 
 /* ── Animated research stage dots ───────────────────────── */
@@ -198,6 +208,7 @@ export default function VoiceModeInterface({
   onSendMessage,
   busy = false,
   status = '',
+  stage = '',
   statusDetail = '',
   lastAssistantMessage = null,
   messages = [],
@@ -205,34 +216,56 @@ export default function VoiceModeInterface({
   error = '',
   onRetry,
   onSwitchToText,
-  voiceSettings = { voice: 'Shivani', language: 'indic-auto', autoPlay: true },
+  voiceSettings = { voice: 'Shivani', language: 'indic-auto', autoPlay: true, speed: 1 },
   onUpdateVoiceSettings
 }) {
   const [recording, setRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [micStream, setMicStream] = useState(null);
   const [permissionError, setPermissionError] = useState('');
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [transcriptionStatus, setTranscriptionStatus] = useState('');
+  const [lastTranscript, setLastTranscript] = useState('');
   const [synthesizing, setSynthesizing] = useState(false);
   const [audioUrl, setAudioUrl] = useState('');
   const [audioError, setAudioError] = useState('');
   const [browserSpeech, setBrowserSpeech] = useState(false);
+  const [browserSpeaking, setBrowserSpeaking] = useState(false);
+  const [browserPaused, setBrowserPaused] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [interruptKey, setInterruptKey] = useState(0);
   const [spokenAnswer, setSpokenAnswer] = useState('');
   const [showSettings, setShowSettings] = useState(false);
 
   const mediaRecorderRef = useRef(null);
+  const micStreamRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const startTimeRef = useRef(0);
+  const cancelledRecordingRef = useRef(false);
   const synthesizedMessageIdRef = useRef(null);
+  const synthesisControllerRef = useRef(null);
 
-  // Clean up on unmount
+  // Clean up only when the interface unmounts; changing stream state must not stop recording.
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      if (micStream) micStream.getTracks().forEach((t) => t.stop());
+      if (mediaRecorderRef.current?.state === 'recording') {
+        cancelledRecordingRef.current = true;
+        audioChunksRef.current = [];
+        mediaRecorderRef.current.onstop = null;
+        mediaRecorderRef.current.stop();
+      }
+      micStreamRef.current?.getTracks().forEach((track) => track.stop());
+      window.speechSynthesis?.cancel();
+      synthesisControllerRef.current?.abort();
     };
-  }, [micStream]);
+  }, []);
+
+  useEffect(() => () => {
+    if (audioUrl.startsWith('blob:')) URL.revokeObjectURL(audioUrl);
+  }, [audioUrl]);
 
   // Auto-synthesize via Gnani Timbre whenever a new assistant message completes
   useEffect(() => {
@@ -248,23 +281,28 @@ export default function VoiceModeInterface({
 
   async function synthesizeResponse(text) {
     if (!text) return;
+    synthesisControllerRef.current?.abort();
+    const controller = new AbortController();
+    synthesisControllerRef.current = controller;
     setSynthesizing(true);
     setAudioError('');
     setBrowserSpeech(false);
     setSpokenAnswer('');
     window.speechSynthesis?.cancel();
-    let cleanText = formatForSpeech(text);
+    let cleanText = finalizeSpokenAnswer(formatForSpeech(text));
     try {
       const prepared = await fetch('/api/v1/voice/prepare-answer', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer: text, question: lastUserMsg?.content || '' })
+        body: JSON.stringify({ answer: text, question: lastUserMsg?.content || '' }),
+        signal: controller.signal
       });
       if (prepared.ok) {
         const body = await prepared.json();
-        if (body.data?.text?.trim()) cleanText = body.data.text.trim();
+        if (body.data?.text?.trim()) cleanText = finalizeSpokenAnswer(body.data.text);
       }
+      if (!cleanText) throw new Error('There is no answer text to speak.');
       setSpokenAnswer(cleanText);
 
       const response = await fetch('/api/v1/voice/synthesize', {
@@ -274,8 +312,10 @@ export default function VoiceModeInterface({
         body: JSON.stringify({
           text: cleanText.slice(0, 4000),
           language: voiceSettings.language === 'indic-auto' ? 'auto' : voiceSettings.language,
-          voice: voiceSettings.voice || 'Shivani'
-        })
+          voice: voiceSettings.voice || 'Shivani',
+          speed: voiceSettings.speed || 1
+        }),
+        signal: controller.signal
       });
 
       if (!response.ok) {
@@ -285,46 +325,71 @@ export default function VoiceModeInterface({
 
       if (response.headers.get('content-type')?.includes('audio/')) {
         const blob = await response.blob();
+        if (controller.signal.aborted) return;
         setAudioUrl(URL.createObjectURL(blob));
       } else {
         const body = await response.json();
         const jobId = body.data?.jobId;
-        if (jobId) {
-          for (let attempt = 0; attempt < 60; attempt++) {
-            await new Promise((r) => setTimeout(r, 2000));
-            const poll = await fetch(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include' });
-            const data = await poll.json();
-            if (data.data?.status === 'COMPLETED') {
-              setAudioUrl(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}/audio`);
-              break;
-            }
-            if (['FAILED', 'CANCELLED'].includes(data.data?.status)) {
-              throw new Error('Voice generation did not complete.');
-            }
+        if (!jobId) throw new Error('Speech job was not accepted.');
+        let completed = false;
+        for (let attempt = 0; attempt < 120; attempt++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const poll = await fetch(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include', signal: controller.signal });
+          const data = await poll.json();
+          if (!poll.ok) throw new Error(data.error?.message || 'Unable to check speech job status.');
+          if (data.data?.status === 'COMPLETED') {
+            if (!controller.signal.aborted) setAudioUrl(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}/audio`);
+            completed = true;
+            break;
           }
+          if (['FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED'].includes(data.data?.status)) throw new Error('Speech generation did not complete.');
         }
+        if (!completed) throw new Error('Speech generation is taking longer than expected.');
       }
     } catch {
+      if (controller.signal.aborted) return;
       if ('speechSynthesis' in window && 'SpeechSynthesisUtterance' in window && cleanText) {
-        const utterance = new SpeechSynthesisUtterance(cleanText.slice(0, 4000));
-        utterance.lang = voiceSettings.language === 'indic-auto' ? 'en-IN' : voiceSettings.language;
-        if (voiceSettings.autoPlay) window.speechSynthesis.speak(utterance);
+        if (voiceSettings.autoPlay) startBrowserSpeech(cleanText);
         setBrowserSpeech(true);
       } else {
         setAudioError('Voice playback is unavailable. You can try playing the answer again.');
       }
     } finally {
-      setSynthesizing(false);
+      if (synthesisControllerRef.current === controller) setSynthesizing(false);
     }
+  }
+
+  function startBrowserSpeech(text) {
+    setBrowserSpeaking(false);
+    setBrowserPaused(false);
+    const utterance = new SpeechSynthesisUtterance(text.slice(0, 4000));
+    utterance.lang = voiceSettings.language === 'indic-auto' ? 'en-IN' : voiceSettings.language;
+    utterance.rate = Number(voiceSettings.speed || 1);
+    utterance.onstart = () => { setBrowserSpeaking(true); setBrowserPaused(false); };
+    utterance.onend = () => { setBrowserSpeaking(false); setBrowserPaused(false); };
+    utterance.onerror = () => { setBrowserSpeaking(false); setBrowserPaused(false); };
+    window.speechSynthesis.speak(utterance);
   }
 
   /* ── Recording ── */
   async function startRecording() {
+    cancelledRecordingRef.current = false;
     setPermissionError('');
+    setPermissionDenied(false);
     setAudioError('');
+    setLastTranscript('');
+    synthesisControllerRef.current?.abort();
+    setSpeaking(false);
+    setInterruptKey((key) => key + 1);
+    window.speechSynthesis?.cancel();
+    setBrowserSpeaking(false);
+    setBrowserPaused(false);
     audioChunksRef.current = [];
+    let acquiredStream;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      acquiredStream = stream;
+      micStreamRef.current = stream;
       setMicStream(stream);
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
@@ -336,9 +401,19 @@ export default function VoiceModeInterface({
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       mediaRecorderRef.current = recorder;
       recorder.ondataavailable = (e) => { if (e.data?.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onerror = (event) => {
+        if (timerRef.current) clearInterval(timerRef.current);
+        stream.getTracks().forEach((track) => track.stop());
+        micStreamRef.current = null;
+        setMicStream(null);
+        setRecording(false);
+        setPermissionError(event.error?.message || 'The browser could not capture this recording. Please try again.');
+      };
       recorder.onstop = () => {
+        if (cancelledRecordingRef.current) return;
         const duration = (Date.now() - startTimeRef.current) / 1000;
         stream.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
         setMicStream(null);
         if (duration < 0.6 || audioChunksRef.current.length === 0) {
           setPermissionError('Recording was too short. Tap the microphone and speak naturally.');
@@ -356,8 +431,13 @@ export default function VoiceModeInterface({
       setRecordingSeconds(0);
       timerRef.current = setInterval(() => setRecordingSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000)), 250);
     } catch (err) {
+      acquiredStream?.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+      setMicStream(null);
+      const denied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+      setPermissionDenied(denied);
       setPermissionError(
-        err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError'
+        denied
           ? 'Microphone permission was denied. Allow microphone access in your browser or switch to Text Mode.'
           : 'Microphone could not be accessed. Ensure your microphone is connected or switch to Text Mode.'
       );
@@ -372,10 +452,15 @@ export default function VoiceModeInterface({
   }
 
   function cancelRecording() {
+    cancelledRecordingRef.current = true;
     if (timerRef.current) clearInterval(timerRef.current);
     audioChunksRef.current = [];
     if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
-    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); setMicStream(null); }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+      setMicStream(null);
+    }
     setRecording(false);
     setRecordingSeconds(0);
   }
@@ -383,9 +468,10 @@ export default function VoiceModeInterface({
   /* ── Transcription via worker (ffmpeg guaranteed in Docker) ── */
   async function submitVoiceForTranscription(audioFile) {
     setTranscribing(true);
+    setTranscriptionStatus('Sending recording securely…');
     setPermissionError('');
     try {
-      const idempotencyKey = crypto.randomUUID();
+      const idempotencyKey = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const bgResponse = await fetch('/api/v1/audio/jobs', {
         method: 'POST',
         credentials: 'include',
@@ -403,14 +489,23 @@ export default function VoiceModeInterface({
         const jobBody = await bgResponse.json();
         const jobId = jobBody.data?.jobId;
         if (!jobId) throw new Error('Audio job was not accepted by the server.');
-        for (let attempt = 0; attempt < 60; attempt++) {
+        setTranscriptionStatus('Audio received · starting speech recognition…');
+        for (let attempt = 0; attempt < 120; attempt++) {
           await new Promise((r) => setTimeout(r, 2500));
           const poll = await fetch(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include' });
           const pollData = await poll.json();
+          if (!poll.ok) throw new Error(pollData.error?.message || 'Unable to check speech recognition progress.');
           const jobStatus = pollData.data?.status;
+          const progress = Number(pollData.data?.progress);
+          setTranscriptionStatus(jobStatus === 'QUEUED'
+            ? 'Recording queued · waiting for speech recognition…'
+            : Number.isFinite(progress) && progress > 0
+              ? `Recognizing speech · ${Math.min(99, progress)}%`
+              : 'Recognizing speech…');
           if (jobStatus === 'COMPLETED' || jobStatus === 'PARTIALLY_COMPLETED') {
             const transcript = (pollData.data?.result?.transcript || '').trim();
             if (!transcript) throw new Error('No clear speech was recognized. Please try speaking again.');
+            setLastTranscript(transcript);
             onSendMessage(transcript);
             return;
           }
@@ -432,7 +527,11 @@ export default function VoiceModeInterface({
       if (bgCode !== 'WORKER_UNAVAILABLE' && bgResponse.status !== 503) {
         throw new Error(bgBody.error?.message || 'Audio upload failed.');
       }
-      const imResponse = await fetch('/api/v1/voice/transcribe', {
+      setTranscriptionStatus('Using direct speech recognition…');
+      const directUrl = new URL('/api/v1/voice/transcribe', window.location.origin);
+      directUrl.searchParams.set('mode', 'codemix');
+      directUrl.searchParams.set('language', voiceSettings.language || 'indic-auto');
+      const imResponse = await fetch(directUrl, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -452,11 +551,13 @@ export default function VoiceModeInterface({
       }
       const text = (imBody.data?.transcript || '').trim();
       if (!text) throw new Error('No clear speech was recognized. Please try speaking again.');
+      setLastTranscript(text);
       onSendMessage(text);
     } catch (err) {
       setPermissionError(err.message || 'Speech recognition failed. You can speak again or switch to Text Mode.');
     } finally {
       setTranscribing(false);
+      setTranscriptionStatus('');
     }
   }
 
@@ -473,11 +574,12 @@ export default function VoiceModeInterface({
 
   /* ── State machine label ── */
   const statePhase = recording
-    ? 'recording'
+    ? 'listening'
     : transcribing
-    ? 'transcribing'
+    ? 'processing'
     : busy
-    ? 'researching'
+    ? (stage === 'memory' ? 'memory' : stage === 'search' ? 'searching' : stage === 'compare' ? 'comparing' : 'researching')
+    : (speaking || browserSpeaking) ? 'speaking'
     : 'idle';
 
   return (
@@ -517,6 +619,8 @@ export default function VoiceModeInterface({
               onLanguageChange={(val) => onUpdateVoiceSettings({ ...voiceSettings, language: val })}
               voice={voiceSettings.voice}
               onVoiceChange={(val) => onUpdateVoiceSettings({ ...voiceSettings, voice: val })}
+              speed={voiceSettings.speed}
+              onSpeedChange={(speed) => onUpdateVoiceSettings({ ...voiceSettings, speed })}
             />
           </div>
         )}
@@ -530,42 +634,37 @@ export default function VoiceModeInterface({
         )}
 
         {/* ── RESEARCHING: background stage indicator (no text streaming) ── */}
-        {statePhase === 'researching' && (
+        {['researching', 'memory', 'searching', 'comparing'].includes(statePhase) && (
           <div className="voice-research-card" style={{ background: '#fff', border: '1px solid #e2e8e1', borderRadius: '20px', padding: '10px 16px', marginBottom: '16px', boxShadow: '0 4px 16px rgba(36,59,53,.06)' }}>
             <ResearchStages status={status} statusDetail={statusDetail} />
-            {findings.length > 0 && (
-              <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '4px', justifyContent: 'center' }}>
-                {findings.map((f, i) => (
-                  <span key={i} style={{ fontSize: '9px', background: '#edf3e9', color: '#567b4a', padding: '2px 7px', borderRadius: '10px', fontWeight: 600 }}>
-                    {f.findingsType === 'memory' ? '📖 Memory' : f.findingsType === 'search' ? '🔍 Web' : f.findingsType === 'diff' ? '📊 Diff' : ''}
-                    {f.items?.length ? ` ×${f.items.length}` : ''}
-                  </span>
-                ))}
-              </div>
-            )}
+            {findings.length > 0 && <details className="voice-activity"><summary>View research activity</summary><div>{findings.map((item, index) => <p key={index}>{item.findingsType === 'memory' ? `Retrieved ${item.items?.length || 0} past conversation${item.items?.length === 1 ? '' : 's'}` : item.findingsType === 'search' ? `Found ${item.items?.length || 0} web sources` : item.findingsType === 'diff' ? item.summary : ''}</p>)}</div></details>}
           </div>
         )}
 
+        {lastTranscript && ['researching', 'memory', 'searching', 'comparing'].includes(statePhase) && (
+          <div className="voice-transcript" aria-live="polite"><span>Recognized</span><p>{lastTranscript}</p></div>
+        )}
+
         {/* ── IDLE/DONE: Show last exchange as compact card ── */}
-        {statePhase === 'idle' && lastAsstMsg && (
+        {['idle', 'speaking'].includes(statePhase) && lastAsstMsg && (
           <div className="voice-answer-card" style={{ background: '#f5f8f4', border: '1px solid #dde7db', borderRadius: '16px', padding: '14px 16px', marginBottom: '16px' }}>
             {synthesizing ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '12px', color: '#566e5f' }}>
                 <span className="spinner" /> Preparing your spoken answer…
               </div>
             ) : audioUrl ? (
-              <VoicePlaybackControls audioUrl={audioUrl} autoPlay={voiceSettings.autoPlay} />
+              <VoicePlaybackControls audioUrl={audioUrl} autoPlay={voiceSettings.autoPlay} interruptKey={interruptKey} onPlaybackChange={setSpeaking} />
             ) : browserSpeech ? (
-              <button type="button" onClick={() => {
-                if (window.speechSynthesis.speaking) window.speechSynthesis.cancel();
-                else {
-                  const utterance = new SpeechSynthesisUtterance((spokenAnswer || formatForSpeech(lastAsstMsg.content)).slice(0, 4000));
-                  utterance.lang = voiceSettings.language === 'indic-auto' ? 'en-IN' : voiceSettings.language;
-                  window.speechSynthesis.speak(utterance);
-                }
-              }} style={{ background: '#243b35', color: '#eaffb7', border: 'none', borderRadius: '8px', padding: '8px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
-                {window.speechSynthesis.speaking ? '⏹ Stop spoken answer' : '🔊 Replay spoken answer'}
-              </button>
+              <div className="browser-speech-controls" role="group" aria-label="Spoken answer controls">
+                <button type="button" onClick={() => {
+                  if (browserPaused) { window.speechSynthesis.resume(); setBrowserPaused(false); }
+                  else if (browserSpeaking) { window.speechSynthesis.pause(); setBrowserPaused(true); }
+                  else startBrowserSpeech(spokenAnswer || formatForSpeech(lastAsstMsg.content));
+                }} aria-label={browserPaused ? 'Resume spoken answer' : browserSpeaking ? 'Pause spoken answer' : 'Replay spoken answer'}>
+                  {browserPaused ? '▶ Resume' : browserSpeaking ? 'Ⅱ Pause' : '↺ Replay'}
+                </button>
+                <button type="button" onClick={() => { window.speechSynthesis.cancel(); setBrowserSpeaking(false); setBrowserPaused(false); }}>Stop</button>
+              </div>
             ) : (
               <button type="button" onClick={() => void synthesizeResponse(lastAsstMsg.content)} style={{ background: '#243b35', color: '#eaffb7', border: 'none', borderRadius: '8px', padding: '8px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
                 🔊 Play spoken answer
@@ -575,7 +674,7 @@ export default function VoiceModeInterface({
         )}
 
         {/* Audio error (non-critical) */}
-        {audioError && statePhase === 'idle' && (
+        {audioError && ['idle', 'speaking'].includes(statePhase) && (
           <div style={{ marginBottom: '10px', fontSize: '11px', color: '#88554c', textAlign: 'center' }}>{audioError}</div>
         )}
 
@@ -624,24 +723,25 @@ export default function VoiceModeInterface({
 
           {/* State label */}
           <div style={{ marginTop: '14px', minHeight: '34px' }}>
-            {statePhase === 'recording' && (
+            {statePhase === 'listening' && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
                 <span className="dot" style={{ background: '#d94334', width: '8px', height: '8px' }} />
                 <span style={{ fontWeight: 700, color: '#243b35', fontSize: '14px' }}>Listening…</span>
                 <span style={{ fontSize: '13px', color: '#66776e', fontVariantNumeric: 'tabular-nums' }}>({formatTime(recordingSeconds)})</span>
               </div>
             )}
-            {statePhase === 'transcribing' && (
+            {statePhase === 'processing' && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
                 <span className="spinner" />
-                <span style={{ fontSize: '13px', color: '#526659' }}>Recognizing speech with Gnani Prisma…</span>
+                <span style={{ fontSize: '13px', color: '#526659' }}>{transcriptionStatus || 'Recognizing speech with Gnani Prisma…'}</span>
               </div>
             )}
-            {statePhase === 'researching' && (
+            {['researching', 'memory', 'searching', 'comparing'].includes(statePhase) && (
               <span style={{ fontSize: '13px', color: '#617067' }}>
-                Researching in background — you'll hear the answer when ready
+                {statePhase === 'memory' ? 'Retrieving your past conversations…' : statePhase === 'searching' ? 'Searching the web…' : statePhase === 'comparing' ? 'Comparing evidence…' : 'Preparing your answer…'}
               </span>
             )}
+            {statePhase === 'speaking' && <span className="voice-live-state" role="status">Speaking your answer</span>}
             {statePhase === 'idle' && !lastAsstMsg && (
               <span style={{ fontSize: '13px', color: '#617067' }}>
                 {isFirstVisit ? 'Tap the microphone to ask your first question' : 'Tap to ask your next question'}
@@ -653,7 +753,7 @@ export default function VoiceModeInterface({
           </div>
 
           {/* Stop / Cancel buttons while recording */}
-          {statePhase === 'recording' && (
+          {statePhase === 'listening' && (
             <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', marginTop: '14px' }}>
               <button
                 type="button"
@@ -674,8 +774,8 @@ export default function VoiceModeInterface({
 
           {/* Mic / permission error */}
           {permissionError && (
-            <div style={{ marginTop: '14px', padding: '10px 14px', background: '#fff0ed', border: '1px solid #f7d5ce', borderRadius: '10px', color: '#984334', fontSize: '12px', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-              <span>{permissionError}</span>
+            <div className="voice-permission-error" role="alert" style={{ marginTop: '14px', padding: '10px 14px', background: '#fff0ed', border: '1px solid #f7d5ce', borderRadius: '10px', color: '#984334', fontSize: '12px', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+              <span><strong>{permissionDenied ? 'Microphone access denied. ' : ''}</strong>{permissionError}</span>
               <button
                 type="button"
                 onClick={onSwitchToText}

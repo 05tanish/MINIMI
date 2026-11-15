@@ -4,6 +4,8 @@ export default function VoicePlaybackControls({
   audioUrl = '',
   autoPlay = true,
   onFinished,
+  onPlaybackChange,
+  interruptKey = 0,
   title = 'AI Voice Response'
 }) {
   const audioRef = useRef(null);
@@ -50,6 +52,14 @@ export default function VoicePlaybackControls({
       audio.removeEventListener('loadedmetadata', onLoadedMetadata);
     };
   }, [audioUrl, autoPlay]);
+
+  useEffect(() => {
+    if (!interruptKey || !audioRef.current) return;
+    audioRef.current.pause();
+    audioRef.current.currentTime = 0;
+  }, [interruptKey]);
+
+  useEffect(() => { onPlaybackChange?.(playing); }, [playing, onPlaybackChange]);
 
   function togglePlay() {
     const audio = audioRef.current;
@@ -140,6 +150,8 @@ export default function VoicePlaybackControls({
       >
         ↺ Replay
       </button>
+
+      <button type="button" onClick={() => { audioRef.current?.pause(); if (audioRef.current) audioRef.current.currentTime = 0; }} aria-label="Stop response audio" className="playback-stop">Stop</button>
 
       <button
         type="button"

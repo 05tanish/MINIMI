@@ -39,6 +39,7 @@ export default function AudioWaveform({ active = false, stream = null }) {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         const audioCtx = new AudioContext();
         audioCtxRef.current = audioCtx;
+        if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 64;
         source = audioCtx.createMediaStreamSource(stream);
@@ -49,9 +50,7 @@ export default function AudioWaveform({ active = false, stream = null }) {
       }
     }
 
-    let frame = 0;
     function render() {
-      frame++;
       ctx.clearRect(0, 0, width, height);
       const barCount = 28;
       const barWidth = 3;
@@ -67,8 +66,8 @@ export default function AudioWaveform({ active = false, stream = null }) {
           const val = dataArray[i % dataArray.length] / 255;
           normalized = Math.max(0.1, val);
         } else {
-          // Synthetic dynamic wave
-          normalized = 0.2 + 0.6 * Math.abs(Math.sin((frame + i * 8) * 0.08));
+          // Keep a quiet resting line when the browser cannot expose live input levels.
+          normalized = 0.12 + Math.abs(Math.sin(i * 0.48)) * 0.08;
         }
 
         const h = Math.min(height, Math.max(4, normalized * height));
