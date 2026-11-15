@@ -21,6 +21,15 @@ const DEFAULT_VOICE_SETTINGS = { voice: 'Shivani', language: 'indic-auto', autoP
 const apiFetch = (url, options = {}) =>
   fetch(url, { credentials: 'include', ...options, headers: { ...(options.headers ?? {}) } });
 
+async function readApiResponse(response) {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) return response.json();
+  const message = response.status === 404
+    ? 'The API route was not found. Check that the frontend is connected to the deployed API.'
+    : `The server returned an unexpected response (${response.status}).`;
+  throw new Error(message);
+}
+
 /* ─────────────────────── Auth Screen ─────────────────────── */
 function AuthScreen({ onAuthenticated }) {
   const [mode, setMode] = useState('login');
@@ -39,7 +48,7 @@ function AuthScreen({ onAuthenticated }) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
-      const result = await response.json();
+      const result = await readApiResponse(response);
       if (!response.ok) throw new Error(result.error?.message ?? 'Unable to sign in.');
       onAuthenticated(result.data.user);
     } catch (e) {

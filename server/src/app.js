@@ -138,4 +138,9 @@ app.delete('/api/conversations/:id', async (req, res, next) => {
     res.json({ success: true, data: { deleted: true }, error: null });
   } catch (error) { next(error); }
 });
+app.use('/api', (req, res) => res.status(404).json({
+  success: false,
+  data: null,
+  error: { code: 'NOT_FOUND', message: `API route ${req.method} ${req.originalUrl} was not found.` }
+}));
 app.use(errorHandler);
