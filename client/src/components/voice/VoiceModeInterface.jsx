@@ -234,6 +234,7 @@ export default function VoiceModeInterface({
   const [browserSpeaking, setBrowserSpeaking] = useState(false);
   const [browserPaused, setBrowserPaused] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [playbackPaused, setPlaybackPaused] = useState(false);
   const [interruptKey, setInterruptKey] = useState(0);
   const [spokenAnswer, setSpokenAnswer] = useState('');
   const [showSettings, setShowSettings] = useState(false);
@@ -580,6 +581,8 @@ export default function VoiceModeInterface({
     : busy
     ? (stage === 'memory' ? 'memory' : stage === 'search' ? 'searching' : stage === 'compare' ? 'comparing' : 'researching')
     : (speaking || browserSpeaking) ? 'speaking'
+    : (playbackPaused || browserPaused) ? 'paused'
+    : (error || permissionError || audioError) ? 'error'
     : 'idle';
 
   return (
@@ -637,7 +640,6 @@ export default function VoiceModeInterface({
         {['researching', 'memory', 'searching', 'comparing'].includes(statePhase) && (
           <div className="voice-research-card" style={{ background: '#fff', border: '1px solid #e2e8e1', borderRadius: '20px', padding: '10px 16px', marginBottom: '16px', boxShadow: '0 4px 16px rgba(36,59,53,.06)' }}>
             <ResearchStages status={status} statusDetail={statusDetail} />
-            {findings.length > 0 && <details className="voice-activity"><summary>View research activity</summary><div>{findings.map((item, index) => <p key={index}>{item.findingsType === 'memory' ? `Retrieved ${item.items?.length || 0} past conversation${item.items?.length === 1 ? '' : 's'}` : item.findingsType === 'search' ? `Found ${item.items?.length || 0} web sources` : item.findingsType === 'diff' ? item.summary : ''}</p>)}</div></details>}
           </div>
         )}
 
@@ -645,20 +647,42 @@ export default function VoiceModeInterface({
           <div className="voice-transcript" aria-live="polite"><span>Recognized</span><p>{lastTranscript}</p></div>
         )}
 
+        {messages.length > 0 && <details className="voice-transcript-panel">
+          <summary><span>Conversation transcript</span><small>{messages.length} message{messages.length === 1 ? '' : 's'}</small></summary>
+          <div className="voice-transcript-history" aria-label="Complete conversation transcript">
+            {messages.map((message, index) => <article key={message.id || `${message.role}-${index}`} className={`transcript-message ${message.role}`}>
+              <span>{message.role === 'user' ? 'You' : 'Minimi'}</span>
+              <p>{message.content}{message.streaming && <span className="cursor" />}</p>
+            </article>)}
+          </div>
+        </details>}
+
+        {(findings.length > 0 || busy) && <details className="voice-activity-panel" open={busy}>
+          <summary><span>Research activity</span><small>{busy ? (status || 'In progress') : `${findings.length} update${findings.length === 1 ? '' : 's'}`}</small></summary>
+          <div className="voice-activity-list">
+            {busy && <p className="activity-current"><span className="spinner" />{status || 'Preparing your answer…'}{statusDetail && <small>{statusDetail}</small>}</p>}
+            {findings.map((item, index) => <section className="activity-finding" key={`${item.findingsType}-${index}`}>
+              <b>{item.findingsType === 'memory' ? 'Past conversations retrieved' : item.findingsType === 'search' ? 'Web sources collected' : item.findingsType === 'diff' ? 'Historical comparison' : 'Research update'}</b>
+              {item.summary && <p>{item.summary}</p>}
+              {item.items?.map((entry, j) => <p key={j}>{entry.url ? <a href={entry.url} target="_blank" rel="noreferrer">{entry.title || entry.url}</a> : entry.topic || entry.title || entry.snippet || `${item.items.length} results`}{entry.date && <time> · {new Date(entry.date).toLocaleDateString()}</time>}</p>)}
+            </section>)}
+          </div>
+        </details>}
+
         {/* ── IDLE/DONE: Show last exchange as compact card ── */}
-        {['idle', 'speaking'].includes(statePhase) && lastAsstMsg && (
+        {['idle', 'speaking', 'paused'].includes(statePhase) && lastAsstMsg && (
           <div className="voice-answer-card" style={{ background: '#f5f8f4', border: '1px solid #dde7db', borderRadius: '16px', padding: '14px 16px', marginBottom: '16px' }}>
             {synthesizing ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '12px', color: '#566e5f' }}>
                 <span className="spinner" /> Preparing your spoken answer…
               </div>
             ) : audioUrl ? (
-              <VoicePlaybackControls audioUrl={audioUrl} autoPlay={voiceSettings.autoPlay} interruptKey={interruptKey} onPlaybackChange={setSpeaking} />
+              <VoicePlaybackControls audioUrl={audioUrl} autoPlay={voiceSettings.autoPlay} interruptKey={interruptKey} onPlaybackChange={(playing, paused) => { setSpeaking(playing); setPlaybackPaused(paused); }} />
             ) : browserSpeech ? (
               <div className="browser-speech-controls" role="group" aria-label="Spoken answer controls">
                 <button type="button" onClick={() => {
-                  if (browserPaused) { window.speechSynthesis.resume(); setBrowserPaused(false); }
-                  else if (browserSpeaking) { window.speechSynthesis.pause(); setBrowserPaused(true); }
+                  if (browserPaused) { window.speechSynthesis.resume(); setBrowserPaused(false); setBrowserSpeaking(true); }
+                  else if (browserSpeaking) { window.speechSynthesis.pause(); setBrowserPaused(true); setBrowserSpeaking(false); }
                   else startBrowserSpeech(spokenAnswer || formatForSpeech(lastAsstMsg.content));
                 }} aria-label={browserPaused ? 'Resume spoken answer' : browserSpeaking ? 'Pause spoken answer' : 'Replay spoken answer'}>
                   {browserPaused ? '▶ Resume' : browserSpeaking ? 'Ⅱ Pause' : '↺ Replay'}
@@ -685,7 +709,7 @@ export default function VoiceModeInterface({
         >
           {/* Waveform */}
           <div style={{ minHeight: '44px', display: 'grid', placeItems: 'center', marginBottom: '14px' }}>
-            <AudioWaveform active={recording} stream={micStream} />
+            <AudioWaveform active={recording || speaking || browserSpeaking} stream={recording ? micStream : null} />
           </div>
 
           {/* Big mic button */}
@@ -742,6 +766,8 @@ export default function VoiceModeInterface({
               </span>
             )}
             {statePhase === 'speaking' && <span className="voice-live-state" role="status">Speaking your answer</span>}
+            {statePhase === 'paused' && <span className="voice-live-state" role="status">Response paused</span>}
+            {statePhase === 'error' && <span className="voice-error-state" role="status">Something needs attention</span>}
             {statePhase === 'idle' && !lastAsstMsg && (
               <span style={{ fontSize: '13px', color: '#617067' }}>
                 {isFirstVisit ? 'Tap the microphone to ask your first question' : 'Tap to ask your next question'}

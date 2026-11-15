@@ -162,6 +162,75 @@ a.cite:hover{background:#dce9d3;text-decoration:underline}
   .voice-shell{padding:18px 12px!important}
   .voice-card{padding:26px 15px!important}
 }
+
+/* Voice workspace refinement */
+:root{--forest:#193d32;--ivory:#f8f7f1;--white:#fff;--sage:#dce5d7;--charcoal:#25332d;--soft-border:#e7e8de}
+.voice-mode-wrapper{flex:1;min-height:0;display:flex;background:radial-gradient(ellipse at 50% 32%,#f0f2e8 0%,var(--ivory) 58%,#fbfaf6 100%)}
+.voice-shell{width:100%;justify-content:flex-start!important;overflow:auto!important;padding:clamp(18px,4vh,42px) 24px 26px!important}
+.voice-content{width:min(100%,700px)!important;margin:auto}
+.voice-card{max-width:640px!important;padding:clamp(28px,6vh,52px) 28px!important}
+.big-mic-btn{position:relative;isolation:isolate;width:104px!important;height:104px!important;font-size:0!important;background:radial-gradient(circle at 35% 28%,#315a49,var(--forest) 65%)!important}
+.big-mic-btn::before{content:' ';width:25px;height:32px;border:2.5px solid #eef4df;border-radius:15px;position:absolute;top:28px;left:calc(50% - 12.5px)}
+.big-mic-btn::after{content:' ';position:absolute;top:42px;left:calc(50% - 17px);width:29px;height:13px;border:2px solid #eef4df;border-top:0;border-radius:0 0 18px 18px;box-shadow:0 8px 0 -6px #eef4df}
+.big-mic-btn:disabled::before,.big-mic-btn:disabled::after{opacity:.7}
+.voice-card:has(.big-mic-btn[aria-label="Stop recording"]) .big-mic-btn::before{border-color:#f7eee8}
+.voice-card:has(.big-mic-btn[aria-label="Stop recording"]) .big-mic-btn::after{border-color:#f7eee8}
+.voice-answer-card{max-width:640px;margin:0 auto 14px!important}
+.voice-transcript-panel,.voice-activity-panel{width:min(100%,640px);margin:10px auto;border:1px solid var(--soft-border);border-radius:14px;background:#ffffffb8;overflow:hidden;color:var(--charcoal)}
+.voice-transcript-panel>summary,.voice-activity-panel>summary{display:flex;align-items:center;gap:8px;padding:12px 15px;cursor:pointer;list-style:none;font-size:12px;font-weight:600}
+.voice-transcript-panel>summary::-webkit-details-marker,.voice-activity-panel>summary::-webkit-details-marker{display:none}
+.voice-transcript-panel>summary::before,.voice-activity-panel>summary::before{content:'＋';color:#71846b;font-size:14px}
+.voice-transcript-panel[open]>summary::before,.voice-activity-panel[open]>summary::before{content:'−'}
+.voice-transcript-panel summary small,.voice-activity-panel summary small{margin-left:auto;color:#89948b;font-size:10px;font-weight:500}
+.voice-transcript-history{max-height:340px;overflow:auto;padding:0 15px 14px}
+.transcript-message{padding:10px 0;border-top:1px solid #eff0e9}
+.transcript-message>span{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#849084;font-weight:700}
+.transcript-message p{margin:5px 0 0;color:#4a574e;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.transcript-message.user p{color:#68756b}
+.voice-activity-list{padding:0 15px 13px;max-height:240px;overflow:auto}
+.activity-current,.activity-finding{display:flex;align-items:flex-start;gap:8px;margin:0;padding:9px 0;border-top:1px solid #eff0e9;color:#59675d;font-size:11px;line-height:1.5}
+.activity-current{align-items:center}.activity-current .spinner{flex:0 0 auto}.activity-current small{display:block;color:#929b92;font-size:10px}
+.activity-finding{display:block}.activity-finding b{display:block;color:#536c53;font-size:10px;margin-bottom:3px}.activity-finding p{margin:2px 0;color:#727e74;font-size:10px}.activity-finding a{color:#41644b;text-decoration:none}.activity-finding a:hover{text-decoration:underline}.activity-finding time{color:#9ba399}
+.playback-timeline{flex:1;min-width:90px;display:flex;align-items:center;gap:9px}
+.playback-timeline input{width:100%;min-width:40px;height:4px;accent-color:var(--forest);cursor:pointer}
+.playback-speed{display:flex;align-items:center;gap:5px;color:#738076;font-size:9px;white-space:nowrap}
+.playback-speed select{border:1px solid #dfe4d9;border-radius:7px;background:#fff;color:#425449;padding:5px 4px;font:10px 'DM Sans',sans-serif}
+.voice-live-state{color:var(--forest)}.voice-error-state{color:#9a5145}
+.conversation-row.active{border-radius:10px;background:#e5ebdf;box-shadow:inset 2px 0 0 var(--forest)}
+.conversation-row.active .conversation{background:transparent;color:var(--charcoal);font-weight:600}
+.conversation:focus{outline:none}.conversation:focus-visible{outline:2px solid #78916c;outline-offset:-2px;border-radius:8px}
+.conversation-actions{background:linear-gradient(90deg,transparent,#e5ebdfee 20%);border-radius:8px}
+.sidebar-collapsed .sidebar{transition:width .22s ease,padding .22s ease}
+.topbar{justify-content:flex-start;gap:14px}
+.connection{margin-left:auto}
+.sidebar-expand{margin-left:0!important}
+@media(max-width:760px){
+ .voice-shell{justify-content:center!important;padding:16px 14px 22px!important}
+ .voice-content{margin:auto}
+ .voice-card{padding:30px 18px!important;border-radius:24px!important}
+ .big-mic-btn{width:92px!important;height:92px!important}
+ .voice-playback-bar{display:grid!important;grid-template-columns:auto auto 1fr;gap:8px!important}
+ .voice-playback-bar .playback-speed{grid-column:2}
+ .playback-timeline{grid-column:1/-1;width:100%}
+ .voice-playback-bar>button[aria-label*="Mute"]{display:none}
+}
+@media(max-width:480px){
+ .topbar{gap:7px}.connection{display:none}
+ .voice-shell{padding:12px 10px 18px!important}
+ .voice-header{margin-bottom:14px!important}
+ .voice-card{padding:26px 14px!important}
+ .voice-activity-list,.voice-transcript-history{max-height:260px}
+ .voice-answer-card{padding:10px!important}
+}
+@media(prefers-reduced-motion:reduce){.big-mic-btn,.mic-pulse{animation:none!important;transition:none!important}}
+
+/* Final palette and voice state polish */
+:root{--forest:#193d32;--ivory:#f8f7f1;--white:#fff;--sage:#dce5d7;--charcoal:#25332d;--soft-border:#e7e8de}
+.voice-mode-wrapper{background:radial-gradient(ellipse at 50% 32%,#f0f2e8 0%,var(--ivory) 58%,#fbfaf6 100%)}
+.big-mic-btn{background:radial-gradient(circle at 35% 28%,#315a49,var(--forest) 65%)!important}
+.mode-btn.active{background:var(--forest)!important}
+.connection i{background:#6d9a77}
+@media(max-width:760px){.voice-playback-bar{grid-template-columns:auto auto 1fr!important}.voice-playback-bar .playback-timeline{grid-column:1/-1}.voice-playback-bar .playback-speed{grid-column:2}}
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }

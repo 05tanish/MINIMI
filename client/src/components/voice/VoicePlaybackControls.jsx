@@ -13,6 +13,7 @@ export default function VoicePlaybackControls({
   const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [speed, setSpeed] = useState(1);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -59,7 +60,7 @@ export default function VoicePlaybackControls({
     audioRef.current.currentTime = 0;
   }, [interruptKey]);
 
-  useEffect(() => { onPlaybackChange?.(playing); }, [playing, onPlaybackChange]);
+  useEffect(() => { onPlaybackChange?.(playing, Boolean(audioRef.current?.paused && currentTime > 0)); }, [playing, currentTime, onPlaybackChange]);
 
   function togglePlay() {
     const audio = audioRef.current;
@@ -83,6 +84,20 @@ export default function VoicePlaybackControls({
     if (!audio) return;
     audio.muted = !muted;
     setMuted(!muted);
+  }
+
+  function stop() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
+    setCurrentTime(0);
+  }
+
+  function changeSpeed(value) {
+    const next = Number(value);
+    setSpeed(next);
+    if (audioRef.current) audioRef.current.playbackRate = next;
   }
 
   function formatTime(secs) {
@@ -151,7 +166,7 @@ export default function VoicePlaybackControls({
         ↺ Replay
       </button>
 
-      <button type="button" onClick={() => { audioRef.current?.pause(); if (audioRef.current) audioRef.current.currentTime = 0; }} aria-label="Stop response audio" className="playback-stop">Stop</button>
+      <button type="button" onClick={stop} aria-label="Stop response audio" className="playback-stop">Stop</button>
 
       <button
         type="button"
@@ -169,30 +184,13 @@ export default function VoicePlaybackControls({
         {muted ? '🔇' : '🔊'}
       </button>
 
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-        <div
-          style={{
-            flex: 1,
-            height: '4px',
-            background: '#d4ded4',
-            borderRadius: '2px',
-            overflow: 'hidden'
-          }}
-        >
-          <div
-            style={{
-              width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%`,
-              height: '100%',
-              background: '#446648',
-              borderRadius: '2px',
-              transition: 'width 0.1s linear'
-            }}
-          />
-        </div>
+      <div className="playback-timeline">
+        <input aria-label="Playback position" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(currentTime, duration || 0)} onChange={(event) => { const value = Number(event.target.value); if (audioRef.current) audioRef.current.currentTime = value; setCurrentTime(value); }} />
         <span style={{ fontSize: '10px', color: '#68776f', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
           {formatTime(currentTime)} / {formatTime(duration)}
         </span>
       </div>
+      <label className="playback-speed">Speed <select aria-label="Playback speed" value={speed} onChange={(event) => changeSpeed(event.target.value)}>{[0.75, 1, 1.25, 1.5, 2].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select></label>
     </div>
   );
 }
