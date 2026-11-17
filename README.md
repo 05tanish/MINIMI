@@ -107,6 +107,8 @@ All application routes are under `/api` unless otherwise noted. Authenticated ro
 - Optional image uploads: `CLOUDINARY_*`, `MAX_IMAGE_SIZE_MB`, `MAX_PDF_SIZE_MB`
 - Optional voice and background audio: `GNANI_*`, `WORKER_*`, `REDIS_URL`, `CELERY_*`
 
+The Node API and outbox worker run as separate processes: use `npm start` for the API and `npm run start:worker` for outbox jobs. In production, run at least one worker process; additional worker replicas coordinate through database row locks. Configure `CLIENT_ORIGIN` as the exact HTTPS frontend origin, keep `COOKIE_SAME_SITE=lax`, and production cookies are always secure. For hosted Redis, set the provider's supported URL explicitly for `REDIS_URL` and `CELERY_BROKER_URL`; use the same URL for `CELERY_RESULT_BACKEND` unless the provider documents and you have verified a separate database endpoint. The audio gateway's `/internal/health` returns 503 until Redis and a Celery worker both respond to health checks.
+
 For Neon, use a pooled connection URL at runtime. Ensure pgvector is installed and available to the database role before running migrations. The Prisma script selects environment-specific database credentials according to `NODE_ENV`; tests do not silently use the development database.
 
 ## Deployment

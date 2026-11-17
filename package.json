@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "node --watch server/src/server.js",
+    "start:worker": "node server/src/worker.js",
     "dev:client": "vite --config client/vite.config.js --host 0.0.0.0",
     "build": "vite build --config client/vite.config.js",
     "start": "node server/src/server.js",

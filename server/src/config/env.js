@@ -52,3 +52,16 @@ const schema = z.object({
 });
 
 export const env = schema.parse(process.env);
+
+if (env.NODE_ENV === 'production') {
+  const origins = env.CLIENT_ORIGIN.split(',').map((origin) => origin.trim());
+  if (!origins.length || origins.some((origin) => {
+    try {
+      const parsed = new URL(origin);
+      return parsed.protocol !== 'https:' || parsed.origin !== origin;
+    } catch {
+      return true;
+    }
+  })) throw new Error('Production CLIENT_ORIGIN must contain exact HTTPS origins only');
+  if (env.COOKIE_SAME_SITE !== 'lax') throw new Error('Production COOKIE_SAME_SITE must be lax');
+}

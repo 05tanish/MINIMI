@@ -6,6 +6,7 @@ import { observeJob } from '../infrastructure/metrics.js';
 import { processChatTurn } from '../modules/chat/service.js';
 
 let polling = false;
+let stopping = false;
 let timer;
 const activeChatJobs = new Set();
 
@@ -153,15 +154,15 @@ async function processChatEvent(event) {
 }
 
 async function poll() {
-  if (polling || !prisma) return;
+  if (polling || stopping || !prisma) return;
   polling = true;
-  try { while (await processOne()) { /* drain ready jobs without overlapping pollers */ } }
+  try { while (!stopping && await processOne()) { /* drain ready jobs without overlapping pollers */ } }
   catch (error) { logger.error({ code: error.code ?? error.name }, 'Outbox poll failed'); }
   finally { polling = false; }
 }
 
 export function startMemoryIndexer() {
-  if (!prisma || timer) return;
+  if (!prisma || timer || stopping) return;
   timer = setInterval(() => void poll(), 1500);
   timer.unref();
   void poll();
@@ -169,6 +170,7 @@ export function startMemoryIndexer() {
 }
 
 export async function stopMemoryIndexer() {
+  stopping = true;
   if (timer) clearInterval(timer);
   timer = undefined;
   while (polling) await new Promise((resolve) => setTimeout(resolve, 20));
