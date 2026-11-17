@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# Azure Container Apps template — frontend (Nginx + React SPA)
+#
+# Ingress: external (public HTTPS via ACA managed certificate)
+# Port: 8080
+# Image: minimi-frontend (built from frontend.Dockerfile)
+#
+# Placeholders to replace before deployment:
+#   <location>           — Azure region, e.g. centralindia
+#   <resource-group>     — resource group name
+#   <env-resource-id>    — full ACA environment resource ID
+#   <acr-login-server>   — ACR login server, e.g. minimiabc123.azurecr.io
+#   <image-tag>          — image tag, e.g. git short SHA
+#   <api-internal-fqdn>  — internal FQDN of the API container app
+# ---------------------------------------------------------------------------
+properties:
+  environmentId: <env-resource-id>
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: true
+      targetPort: 8080
+      transport: auto
+      allowInsecure: false
+    registries:
+      - server: <acr-login-server>
+        identity: system-environment
+  template:
+    containers:
+      - name: frontend
+        image: <acr-login-server>/minimi-frontend:<image-tag>
+        env:
+          - name: API_UPSTREAM
+            value: http://<api-internal-fqdn>
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        probes:
+          - type: Liveness
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          - type: Readiness
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+    scale:
+      minReplicas: 1
+      maxReplicas: 3

@@ -1,0 +1,131 @@
+# ---------------------------------------------------------------------------
+# Azure Container Apps template — worker API (FastAPI audio gateway)
+#
+# Ingress: internal (only reachable within the ACA environment)
+# Port: 8000
+# Image: minimi-audio-worker (built from worker/Dockerfile)
+#
+# Protected operational routes require X-Worker-Secret matching
+# WORKER_INTERNAL_SECRET. Health routes expose status only. The gateway stores job metadata in
+# Redis and writes audio files to /data/audio (Azure Files share).
+#
+# Placeholders to replace before deployment:
+#   <location>               — Azure region
+#   <resource-group>         — resource group name
+#   <env-resource-id>        — full ACA environment resource ID
+#   <acr-login-server>        — ACR login server
+#   <image-tag>              — image tag
+#
+# The renderer substitutes secret markers below from hidden-input environment
+# variables. Never deploy this template without rendering it first.
+#   worker-secret           → WORKER_INTERNAL_SECRET
+#   redis-url               → REDIS_URL (Upstash rediss:// URL with password)
+# Optional providers are omitted from this baseline template. Add their
+# secret and matching env secretRef only when the provider is enabled.
+#
+# Azure Files volume:
+#   The volume name "audio-volume" references storageName "minimi-audio",
+#   which must match the name registered on the ACA environment via
+#   `az containerapp env storage set --storage-name minimi-audio`.
+#   Both worker-api and celery mount the same share at /data/audio.
+# ---------------------------------------------------------------------------
+properties:
+  environmentId: <env-resource-id>
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: false
+      targetPort: 8000
+      transport: auto
+    registries:
+      - server: <acr-login-server>
+        identity: system-environment
+    secrets:
+      - name: worker-secret
+        value: __SECRET_WORKER_INTERNAL_SECRET__
+      - name: redis-url
+        value: __SECRET_UPSTASH_REDIS_TLS_URL__
+  template:
+    containers:
+      - name: worker-api
+        image: <acr-login-server>/minimi-audio-worker:<image-tag>
+        env:
+          # --- Redis (native TLS via Upstash rediss://) ---
+          - name: REDIS_URL
+            secretRef: redis-url
+          - name: CELERY_BROKER_URL
+            secretRef: redis-url
+          - name: CELERY_RESULT_BACKEND
+            secretRef: redis-url
+          # --- Shared internal secret ---
+          - name: WORKER_INTERNAL_SECRET
+            secretRef: worker-secret
+          # --- Storage ---
+          - name: WORKER_STORAGE_DIR
+            value: /data/audio
+          # --- Audio limits (aligned with Nginx 120 MiB cap) ---
+          - name: MAX_AUDIO_UPLOAD_BYTES
+            value: "125829120"
+          - name: MAX_AUDIO_DURATION_SECONDS
+            value: "3600"
+          - name: AUDIO_CHUNK_DURATION_SECONDS
+            value: "300"
+          - name: AUDIO_CHUNK_OVERLAP_SECONDS
+            value: "3"
+          - name: MAX_RETRIES
+            value: "3"
+          # MAX_AUDIO_SIZE_MB is read by config.py and validated (must be > 0)
+          # but is NOT used in upload validation paths.  The actual upload
+          # cap is MAX_AUDIO_UPLOAD_BYTES.
+          - name: MAX_AUDIO_SIZE_MB
+            value: "10"
+          # --- Pyannote (disabled by default) ---
+          - name: PYANNOTE_ENABLED
+            value: "false"
+          # --- Gnani STT/TTS provider ---
+          - name: GNANI_API_BASE_URL
+            value: https://api.vachana.ai
+          - name: GNANI_STT_MODEL
+            value: prisma-v3.0
+          - name: GNANI_TTS_MODEL
+            value: timbre-v3.0
+          - name: GNANI_TTS_VOICE
+            value: Shivani
+          - name: GNANI_REQUEST_TIMEOUT_MS
+            value: "30000"
+          # --- Optional Evon integration ---
+          # --- VAD settings ---
+          - name: AUDIO_VAD_MIN_SILENCE_SECONDS
+            value: "0.35"
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        volumeMounts:
+          - volumeName: audio-volume
+            mountPath: /data/audio
+        probes:
+          # The /internal/health endpoint pings Redis and Celery, so allow
+          # a longer timeout than typical HTTP probes.
+          - type: Liveness
+            httpGet:
+              path: /internal/live
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          - type: Readiness
+            httpGet:
+              path: /internal/health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+    volumes:
+      - name: audio-volume
+        storageName: minimi-audio
+        storageType: AzureFile
+    scale:
+      minReplicas: 1
+      maxReplicas: 2

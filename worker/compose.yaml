@@ -45,7 +45,7 @@ services:
       context: .
       args:
         INSTALL_PYANNOTE: ${INSTALL_PYANNOTE:-false}
-    command: ["sh", "-c", "celery -A app.celery_app:celery_app worker --loglevel=INFO --concurrency=${MAX_PARALLEL_AUDIO_TASKS:-3}"]
+    command: ["sh", "-c", "celery -A app.celery_app:celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-1}"]
     env_file: ../.env
     environment:
       PYANNOTE_ENABLED: ${PYANNOTE_ENABLED:-false}

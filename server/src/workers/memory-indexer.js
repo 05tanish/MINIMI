@@ -29,15 +29,31 @@ async function claimOne() {
   });
 }
 
-async function indexConversation(conversationId, signal) {
-  const messages = await prisma.message.findMany({ where: { conversationId }, orderBy: { createdAt: 'desc' }, take: 200 });
-  if (!messages.length) return;
-  const chronological = messages.reverse();
+export async function loadConversationMessages(conversationId) {
+  const chronological = [];
+  let cursor;
+  while (true) {
+    const page = await prisma.message.findMany({
+      where: { conversationId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 200,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+    });
+    chronological.push(...page);
+    if (page.length < 200) break;
+    cursor = page.at(-1).id;
+  }
+  return chronological;
+}
+
+export async function indexConversation(conversationId, signal) {
+  const chronological = await loadConversationMessages(conversationId);
   const chunks = makeTopicChunks(chronological).map((chunk) => ({ ...chunk, id: `chunk_${conversationId}_${chunk.messageIds.join('_')}` }));
   const ids = chunks.map((chunk) => chunk.id);
-  const existing = await prisma.memoryChunk.findMany({ where: { id: { in: ids } }, select: { id: true } });
-  const existingIds = new Set(existing.map((row) => row.id));
-  const pending = chunks.filter((chunk) => !existingIds.has(chunk.id));
+  const existing = await prisma.memoryChunk.findMany({ where: { conversationId }, select: { id: true, content: true } });
+  const existingById = new Map(existing.map((row) => [row.id, row]));
+  const pending = chunks.filter((chunk) => existingById.get(chunk.id)?.content !== chunk.content);
+  const pendingIds = new Set(pending.map((chunk) => chunk.id));
   const embedded = await mapWithConcurrency(pending, 2, async (chunk) => ({
     ...chunk,
     embedding: await embedText(chunk.content, signal).catch((error) => {
@@ -47,7 +63,7 @@ async function indexConversation(conversationId, signal) {
   }));
   // Pre-resolve entities outside the transaction to avoid Neon pooled connection timeouts
   const allEntities = new Map();
-  for (const chunk of [...chunks.filter((item) => existingIds.has(item.id)), ...embedded]) {
+  for (const chunk of [...chunks.filter((item) => !pendingIds.has(item.id)), ...embedded]) {
     for (const entity of chunk.entities || []) {
       const normalizedName = entity.name?.toLowerCase();
       if (normalizedName && !allEntities.has(normalizedName)) {
@@ -66,13 +82,9 @@ async function indexConversation(conversationId, signal) {
   }
 
   await prisma.$transaction(async (tx) => {
-    const stale = await tx.memoryChunk.findMany({ where: { conversationId, id: { notIn: ids } }, select: { id: true } });
-    if (stale.length) {
-      const staleIds = stale.map((row) => row.id);
-      await tx.entityMention.deleteMany({ where: { conversationId, messageId: { in: chronological.map((message) => message.id) } } });
-      await tx.memoryChunk.deleteMany({ where: { id: { in: staleIds } } });
-    }
-    for (const chunk of [...chunks.filter((item) => existingIds.has(item.id)), ...embedded]) {
+    await tx.entityMention.deleteMany({ where: { conversationId } });
+    await tx.memoryChunk.deleteMany({ where: { conversationId, ...(ids.length ? { id: { notIn: ids } } : {}) } });
+    for (const chunk of [...chunks.filter((item) => !pendingIds.has(item.id)), ...embedded]) {
       await tx.$executeRaw`INSERT INTO "MemoryChunk" (id, "conversationId", content, topic, entities, metadata, "startAt", "endAt", embedding, "searchVector") VALUES (${chunk.id}, ${conversationId}, ${chunk.content}, ${chunk.topic}, ${JSON.stringify(chunk.entities)}::jsonb, ${JSON.stringify({ messageIds: chunk.messageIds })}::jsonb, ${chunk.startAt}, ${chunk.endAt}, ${chunk.embedding ? `[${chunk.embedding.join(',')}]` : null}::vector, to_tsvector('english', ${chunk.content})) ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, entities = EXCLUDED.entities, metadata = EXCLUDED.metadata, embedding = COALESCE(EXCLUDED.embedding, "MemoryChunk".embedding), "searchVector" = EXCLUDED."searchVector"`;
       for (const messageId of chunk.messageIds) for (const entity of chunk.entities || []) {
         const normalizedName = entity.name?.toLowerCase();

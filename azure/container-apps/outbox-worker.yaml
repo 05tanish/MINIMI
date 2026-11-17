@@ -1,0 +1,85 @@
+# ---------------------------------------------------------------------------
+# Azure Container Apps template — outbox worker (Node.js background processor)
+#
+# Ingress: none
+# Image: minimi-api (same image as the API; different command)
+# Command: node server/src/worker.js
+#
+# This worker polls the OutboxEvent table and processes memory.index
+# (conversation embedding) and chat.run (background chat generation) events.
+# It needs the same database, LLM, and search credentials as the API, plus
+# the worker gateway URL for voice synthesis in chat.run events.
+#
+# env.js production validation requires CLIENT_ORIGIN and COOKIE_SAME_SITE
+# to be set correctly even though this container serves no HTTP traffic.
+#
+# Placeholders to replace before deployment:
+#   <location>                 — Azure region
+#   <resource-group>           — resource group name
+#   <env-resource-id>          — full ACA environment resource ID
+#   <acr-login-server>          — ACR login server
+#   <image-tag>                — image tag
+#   <frontend-fqdn>             — public frontend FQDN (without scheme)
+#   <worker-api-internal-fqdn>  — internal FQDN of the worker-api container app
+#
+# The renderer substitutes secret markers below from hidden-input environment
+# variables. Never deploy this template without rendering it first.
+#   database-url            → DATABASE_URL
+#   gemini-api-key           → GEMINI_API_KEY
+#   tavily-api-key           → TAVILY_API_KEY
+#   worker-secret            → WORKER_INTERNAL_SECRET
+# ---------------------------------------------------------------------------
+properties:
+  environmentId: <env-resource-id>
+  configuration:
+    activeRevisionsMode: Single
+    registries:
+      - server: <acr-login-server>
+        identity: system-environment
+    secrets:
+      - name: database-url
+        value: __SECRET_DATABASE_URL__
+      - name: gemini-api-key
+        value: __SECRET_GEMINI_API_KEY__
+      - name: tavily-api-key
+        value: __SECRET_TAVILY_API_KEY__
+      - name: worker-secret
+        value: __SECRET_WORKER_INTERNAL_SECRET__
+  template:
+    containers:
+      - name: outbox-worker
+        image: <acr-login-server>/minimi-api:<image-tag>
+        command:
+          - node
+        args:
+          - server/src/worker.js
+        env:
+          # --- Required for production validation (env.js) ---
+          - name: NODE_ENV
+            value: production
+          - name: CLIENT_ORIGIN
+            value: https://<frontend-fqdn>
+          - name: COOKIE_SAME_SITE
+            value: lax
+          # --- Worker gateway ---
+          - name: WORKER_INTERNAL_URL
+            value: http://<worker-api-internal-fqdn>
+          - name: WORKER_INTERNAL_SECRET
+            secretRef: worker-secret
+          - name: WORKER_STORAGE_DIR
+            value: /data/audio
+          - name: MAX_AUDIO_UPLOAD_BYTES
+            value: "125829120"
+          # --- Secret references ---
+          - name: DATABASE_URL
+            secretRef: database-url
+          - name: GEMINI_API_KEY
+            secretRef: gemini-api-key
+          - name: TAVILY_API_KEY
+            secretRef: tavily-api-key
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+    scale:
+      minReplicas: 1
+      maxReplicas: 1

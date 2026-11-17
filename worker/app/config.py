@@ -3,7 +3,7 @@ from pathlib import Path
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL)
-CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 GNANI_API_KEY = os.getenv("GNANI_API_KEY") or os.getenv("GNANI_API", "")
 GNANI_API_BASE_URL = os.getenv("GNANI_API_BASE_URL", "https://api.vachana.ai").rstrip("/")
 GNANI_STT_MODEL = os.getenv("GNANI_STT_MODEL", "prisma-v3.0")

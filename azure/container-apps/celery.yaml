@@ -1,0 +1,112 @@
+# ---------------------------------------------------------------------------
+# Azure Container Apps template — Celery worker (Python background tasks)
+#
+# Ingress: none
+# Image: minimi-audio-worker (same image as worker-api; different command)
+# Command: celery -A app.celery_app:celery_app worker --loglevel=INFO --concurrency=1
+#
+# Health probe limitation:
+#   Azure Container Apps does NOT support exec probes (only HTTP and TCP).
+#   The Docker Compose healthcheck uses an exec command
+#   (celery inspect ping), which cannot be replicated in ACA.
+#   No liveness or readiness probe is configured here.  ACA will restart
+#   the container if the main process exits (crashes), but a hung or
+#   unresponsive Celery worker will not be detected without a probe.
+#   Monitor Celery health via the worker-api /internal/health endpoint,
+#   which pings Celery workers, and via log analysis.
+#
+# Placeholders to replace before deployment:
+#   <location>               — Azure region
+#   <resource-group>         — resource group name
+#   <env-resource-id>        — full ACA environment resource ID
+#   <acr-login-server>        — ACR login server
+#   <image-tag>              — image tag
+#
+# The renderer substitutes secret markers below from hidden-input environment
+# variables. Never deploy this template without rendering it first.
+#   redis-url               → REDIS_URL (Upstash rediss:// URL with password)
+# Optional providers are omitted from this baseline template. Add their
+# secret and matching env secretRef only when the provider is enabled.
+#
+# Azure Files volume:
+#   Same share as worker-api, mounted at /data/audio.  Celery tasks read
+#   source audio from and write synthesized audio to this path.  Both
+#   containers must mount the same storageName "minimi-audio".
+# ---------------------------------------------------------------------------
+properties:
+  environmentId: <env-resource-id>
+  configuration:
+    activeRevisionsMode: Single
+    registries:
+      - server: <acr-login-server>
+        identity: system-environment
+    secrets:
+      - name: redis-url
+        value: __SECRET_UPSTASH_REDIS_TLS_URL__
+  template:
+    containers:
+      - name: celery
+        image: <acr-login-server>/minimi-audio-worker:<image-tag>
+        command:
+          - celery
+        args:
+          - -A
+          - app.celery_app:celery_app
+          - worker
+          - --loglevel=INFO
+          - --concurrency=1
+        env:
+          # --- Redis (native TLS via Upstash rediss://) ---
+          - name: REDIS_URL
+            secretRef: redis-url
+          - name: CELERY_BROKER_URL
+            secretRef: redis-url
+          - name: CELERY_RESULT_BACKEND
+            secretRef: redis-url
+          # --- Storage ---
+          - name: WORKER_STORAGE_DIR
+            value: /data/audio
+          # --- Audio limits (aligned with worker-api) ---
+          - name: MAX_AUDIO_UPLOAD_BYTES
+            value: "125829120"
+          - name: MAX_AUDIO_DURATION_SECONDS
+            value: "3600"
+          - name: AUDIO_CHUNK_DURATION_SECONDS
+            value: "300"
+          - name: AUDIO_CHUNK_OVERLAP_SECONDS
+            value: "3"
+          - name: MAX_RETRIES
+            value: "3"
+          - name: MAX_AUDIO_SIZE_MB
+            value: "10"
+          # --- Pyannote (disabled by default) ---
+          - name: PYANNOTE_ENABLED
+            value: "false"
+          # --- Gnani STT/TTS provider ---
+          - name: GNANI_API_BASE_URL
+            value: https://api.vachana.ai
+          - name: GNANI_STT_MODEL
+            value: prisma-v3.0
+          - name: GNANI_TTS_MODEL
+            value: timbre-v3.0
+          - name: GNANI_TTS_VOICE
+            value: Shivani
+          - name: GNANI_REQUEST_TIMEOUT_MS
+            value: "30000"
+          # --- Optional Evon integration ---
+          # --- VAD settings ---
+          - name: AUDIO_VAD_MIN_SILENCE_SECONDS
+            value: "0.35"
+        resources:
+          cpu: 0.5
+          memory: 1.0Gi
+        volumeMounts:
+          - volumeName: audio-volume
+            mountPath: /data/audio
+    volumes:
+      - name: audio-volume
+        storageName: minimi-audio
+        storageType: AzureFile
+    scale:
+      minReplicas: 1
+      maxReplicas: 3

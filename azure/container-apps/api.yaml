@@ -1,0 +1,111 @@
+# ---------------------------------------------------------------------------
+# Azure Container Apps template — API (Express, Node.js)
+#
+# Ingress: internal (only reachable within the ACA environment)
+# Port: 3001
+# Image: minimi-api (built from root Dockerfile)
+#
+# Placeholders to replace before deployment:
+#   <location>               — Azure region, e.g. centralindia
+#   <resource-group>         — resource group name
+#   <env-resource-id>        — full ACA environment resource ID
+#   <acr-login-server>       — ACR login server
+#   <image-tag>              — image tag
+#   <frontend-fqdn>          — public frontend FQDN (without scheme)
+#   <worker-api-internal-fqdn> — internal FQDN of the worker-api container app
+#   <upstash-rest-url>       — Upstash REST API URL for shared rate limiting
+#
+# The renderer substitutes secret markers below from hidden-input environment
+# variables. Never deploy this template without rendering it first.
+#   database-url            → DATABASE_URL
+#   gemini-api-key           → GEMINI_API_KEY
+#   tavily-api-key           → TAVILY_API_KEY
+#   redis-rest-token         → REDIS_REST_TOKEN
+#   worker-secret            → WORKER_INTERNAL_SECRET
+# ---------------------------------------------------------------------------
+properties:
+  environmentId: <env-resource-id>
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: false
+      targetPort: 3001
+      transport: auto
+    registries:
+      - server: <acr-login-server>
+        identity: system-environment
+    secrets:
+      - name: database-url
+        value: __SECRET_DATABASE_URL__
+      - name: gemini-api-key
+        value: __SECRET_GEMINI_API_KEY__
+      - name: tavily-api-key
+        value: __SECRET_TAVILY_API_KEY__
+      - name: redis-rest-token
+        value: __SECRET_REDIS_REST_TOKEN__
+      - name: worker-secret
+        value: __SECRET_WORKER_INTERNAL_SECRET__
+  template:
+    containers:
+      - name: api
+        image: <acr-login-server>/minimi-api:<image-tag>
+        env:
+          # --- Required for production validation (env.js) ---
+          - name: NODE_ENV
+            value: production
+          - name: CLIENT_ORIGIN
+            value: https://<frontend-fqdn>
+          - name: COOKIE_SAME_SITE
+            value: lax
+          # --- Proxy and session ---
+          - name: TRUST_PROXY
+            value: "true"
+          - name: SESSION_COOKIE_NAME
+            value: minimi_session
+          # --- Worker gateway ---
+          - name: WORKER_INTERNAL_URL
+            value: http://<worker-api-internal-fqdn>
+          - name: WORKER_INTERNAL_SECRET
+            secretRef: worker-secret
+          - name: WORKER_STORAGE_DIR
+            value: /data/audio
+          # --- Audio upload alignment (matches Nginx 120 MiB cap) ---
+          - name: MAX_AUDIO_UPLOAD_BYTES
+            value: "125829120"
+          - name: ENABLE_BACKGROUND_JOBS
+            value: "true"
+          # --- Shared rate limiting (Upstash REST) ---
+          - name: REDIS_REST_URL
+            value: <upstash-rest-url>
+          - name: REDIS_REST_TOKEN
+            secretRef: redis-rest-token
+          # --- Secret references ---
+          - name: DATABASE_URL
+            secretRef: database-url
+          - name: GEMINI_API_KEY
+            secretRef: gemini-api-key
+          - name: TAVILY_API_KEY
+            secretRef: tavily-api-key
+        resources:
+          cpu: 0.5
+          memory: 1.0Gi
+        probes:
+          - type: Liveness
+            httpGet:
+              path: /api/v1/health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          - type: Readiness
+            httpGet:
+              path: /api/v1/health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+    scale:
+      minReplicas: 1
+      maxReplicas: 5

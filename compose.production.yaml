@@ -1,0 +1,136 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: ${MINIMI_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      WORKER_INTERNAL_URL: http://worker-api:8000
+      WORKER_STORAGE_DIR: /data/audio
+      MAX_AUDIO_UPLOAD_BYTES: ${MAX_AUDIO_UPLOAD_BYTES:-125829120}
+      ENABLE_BACKGROUND_JOBS: ${ENABLE_BACKGROUND_JOBS:-true}
+      TRUST_PROXY: "false"
+    depends_on:
+      worker-api:
+        condition: service_healthy
+    networks: [app]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  outbox-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "server/src/worker.js"]
+    env_file: ${MINIMI_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      WORKER_INTERNAL_URL: http://worker-api:8000
+      WORKER_STORAGE_DIR: /data/audio
+      MAX_AUDIO_UPLOAD_BYTES: ${MAX_AUDIO_UPLOAD_BYTES:-125829120}
+    depends_on:
+      worker-api:
+        condition: service_healthy
+    networks: [app]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:8080"
+    environment:
+      API_UPSTREAM: http://api:3001
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [app]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - minimi-redis:/data
+    networks: [app]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker-api:
+    build:
+      context: worker
+      dockerfile: Dockerfile
+      args:
+        INSTALL_PYANNOTE: ${INSTALL_PYANNOTE:-false}
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ${MINIMI_ENV_FILE:-.env}
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-${REDIS_URL:-redis://redis:6379/0}}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-${CELERY_BROKER_URL:-${REDIS_URL:-redis://redis:6379/0}}}
+      WORKER_STORAGE_DIR: /data/audio
+      PYANNOTE_ENABLED: ${PYANNOTE_ENABLED:-false}
+      MAX_AUDIO_UPLOAD_BYTES: ${MAX_AUDIO_UPLOAD_BYTES:-125829120}
+    volumes:
+      - minimi-audio:/data/audio
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery:
+        condition: service_healthy
+    networks: [app]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/internal/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  celery:
+    build:
+      context: worker
+      dockerfile: Dockerfile
+      args:
+        INSTALL_PYANNOTE: ${INSTALL_PYANNOTE:-false}
+    command: ["sh", "-c", "celery -A app.celery_app:celery_app worker --loglevel=INFO --concurrency=${CELERY_CONCURRENCY:-1}"]
+    env_file: ${MINIMI_ENV_FILE:-.env}
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-${REDIS_URL:-redis://redis:6379/0}}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-${CELERY_BROKER_URL:-${REDIS_URL:-redis://redis:6379/0}}}
+      WORKER_STORAGE_DIR: /data/audio
+      PYANNOTE_ENABLED: ${PYANNOTE_ENABLED:-false}
+    volumes:
+      - minimi-audio:/data/audio
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [app]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app:celery_app inspect ping --timeout=3 | grep -q pong"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+volumes:
+  minimi-audio:
+  minimi-redis:
+
+networks:
+  app:
+    driver: bridge
