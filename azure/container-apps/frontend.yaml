@@ -31,7 +31,7 @@ properties:
         image: <acr-login-server>/minimi-frontend:<image-tag>
         env:
           - name: API_UPSTREAM
-            value: http://<api-internal-fqdn>
+            value: https://<api-internal-fqdn>
         resources:
           cpu: 0.25
           memory: 0.5Gi
