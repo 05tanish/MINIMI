@@ -22,6 +22,7 @@ describe('intent routing', () => {
   it('routes history-only questions to memory without search', () => expect(routeIntent('What did I ask you last week?')).toMatchObject({ memory: true, web: false }));
   it('routes historical comparisons to both tools', () => expect(routeIntent('Has the pricing changed since last week?')).toMatchObject({ memory: true, web: true }));
   it('routes current pricing to search only', () => expect(routeIntent('What is current pricing?')).toMatchObject({ memory: false, web: true }));
+  it('routes requests for tool categories to web research when the classifier is unavailable', () => expect(routeIntent('types of CRM and ERP tools')).toMatchObject({ memory: false, web: true }));
   it('keeps general chat local', () => expect(routeIntent('Explain how a database index works')).toMatchObject({ memory: false, web: false }));
   it('routes follow-ups and requests to continue back to memory', () => {
     expect(routeIntent('Continue from where we stopped')).toMatchObject({ memory: true, web: false });

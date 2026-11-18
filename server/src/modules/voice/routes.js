@@ -210,10 +210,23 @@ voiceRouter.post('/audio/jobs', audioBody, async (req, res) => {
   form.set('idempotency_key', idempotencyKey.data);
   try {
     const response = await fetch(`${workerUrl()}/internal/jobs/transcription`, { method: 'POST', headers: { 'X-Worker-Secret': workerSecret() }, body: form, signal: AbortSignal.timeout(120000) });
-    const body = await response.json();
-    if (!response.ok) return fail(res, response.status, body.detail ? 'WORKER_REJECTED' : 'WORKER_UNAVAILABLE', body.detail || 'Worker rejected the audio job.');
+    if (!response.ok) {
+      const failure = workerFailure(response, { notFound: 'endpoint' });
+      req.log?.warn({ upstreamStatus: response.status, code: failure.code }, 'Worker rejected transcription job creation');
+      return fail(res, failure.status, failure.code, failure.message);
+    }
+    const body = await readWorkerJson(response);
+    if (typeof body?.data?.jobId !== 'string' || !body.data.jobId || !JOB_STATUSES.has(body.data.status)) {
+      req.log?.error({ upstreamStatus: response.status }, 'Worker accepted transcription without a valid job ID');
+      return fail(res, 502, 'INVALID_WORKER_RESPONSE', 'Speech service returned an invalid job response.');
+    }
+    req.log?.info({ jobId: body.data.jobId, status: body.data.status }, 'Transcription job created');
     res.status(202).json(body);
-  } catch (error) { fail(res, 503, 'WORKER_UNAVAILABLE', 'Background audio processing could not be reached.'); }
+  } catch (error) {
+    const failure = workerRequestFailure(error);
+    req.log?.warn({ code: failure.code, errorName: error?.name }, 'Transcription worker request failed');
+    fail(res, failure.status, failure.code, failure.message);
+  }
 });
 
 voiceRouter.get('/audio/jobs/:jobId', async (req, res) => {

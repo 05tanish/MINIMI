@@ -76,13 +76,13 @@ ${query}`;
       answer = result;
     } catch (error) {
       if (signal?.aborted) throw error;
-      logger.warn({ status: error.status ?? null, code: error.code ?? null, message: error.message }, 'Gemini unavailable; switching answer generation to Groq');
+      logger.warn({ status: error.status ?? null, code: error.code ?? null }, 'Gemini unavailable; switching answer generation to Groq');
       if (images.length) throw Object.assign(new Error('Image analysis is temporarily unavailable because the vision provider could not be reached.'), { code: 'VISION_UNAVAILABLE' });
       if (env.GROQ_API_KEY) {
         try { answer = await generateWithGroq(messages, signal); }
         catch (fallbackError) {
           if (signal?.aborted) throw fallbackError;
-          logger.warn({ status: fallbackError.status ?? null, code: fallbackError.code ?? null, message: fallbackError.providerMessage ?? fallbackError.message }, 'Groq unavailable; answering from retrieved evidence');
+          logger.warn({ status: fallbackError.status ?? null, code: fallbackError.code ?? null }, 'Groq unavailable; answering from retrieved evidence');
         }
       }
     }
@@ -92,7 +92,7 @@ ${query}`;
     try { answer = await generateWithGroq(messages, signal); }
     catch (error) {
       if (signal?.aborted) throw error;
-      logger.warn({ status: error.status ?? null, code: error.code ?? null, message: error.providerMessage ?? error.message }, 'Groq unavailable; answering from retrieved evidence');
+      logger.warn({ status: error.status ?? null, code: error.code ?? null }, 'Groq unavailable; answering from retrieved evidence');
     }
   }
   answer ||= buildEvidenceFallback(query, history, sources);

@@ -68,7 +68,7 @@ properties:
             value: minimi_session
           # --- Worker gateway ---
           - name: WORKER_INTERNAL_URL
-            value: http://<worker-api-internal-fqdn>
+            value: https://<worker-api-internal-fqdn>
           - name: WORKER_INTERNAL_SECRET
             secretRef: worker-secret
           - name: WORKER_STORAGE_DIR

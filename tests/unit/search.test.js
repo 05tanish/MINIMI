@@ -7,7 +7,9 @@ afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks(); });
 describe('Tavily normalization', () => {
   it('deduplicates URLs and preserves successful results when another query fails', async () => {
     globalThis.fetch = vi.fn(async (_url, options) => {
+      expect(options.headers.authorization).toBe('Bearer test-key');
       const { query } = JSON.parse(options.body);
+      expect(options.body).not.toContain('test-key');
       if (query === 'broken') return new Response(JSON.stringify({ error: 'invalid query' }), { status: 400 });
       return new Response(JSON.stringify({ results: [
         { title: 'Pricing', url: 'https://example.com/pricing#plans', content: 'Official plan details', published_date: '2026-10-01' },
@@ -20,5 +22,12 @@ describe('Tavily normalization', () => {
     expect(result.sources[0]).toMatchObject({ title: 'Pricing', publishedAt: '2026-10-01' });
     expect(result.sources[0].retrievedAt).toBeTruthy();
     expect(result.failures).toEqual([{ query: 'broken', error: 'SEARCH_FAILED' }]);
+  });
+
+  it('rejects malformed provider responses as a safe search failure', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ results: 'not-an-array' }), { status: 200 }));
+    const result = await searchQueries(['crm and erp tools'], new AbortController().signal);
+    expect(result.sources).toEqual([]);
+    expect(result.failures).toEqual([{ query: 'crm and erp tools', error: 'SEARCH_INVALID_RESPONSE' }]);
   });
 });

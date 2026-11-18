@@ -384,6 +384,7 @@ export default function VoiceModeInterface({
         const jobId = body.data?.jobId;
         if (!jobId) throw new Error('Speech job was not accepted.');
         let completed = false;
+        let missingJobResponses = 0;
         const pollDeadline = Date.now() + 4 * 60 * 1000;
         while (Date.now() < pollDeadline) {
           await waitForPollInterval(2000, controller.signal);
@@ -391,7 +392,9 @@ export default function VoiceModeInterface({
           const poll = await fetch(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include', signal: pollSignal });
           const data = await poll.json().catch(() => null);
           if (!data || typeof data !== 'object') throw new Error('Speech service returned an invalid job status.');
+          if (poll.status === 404 && ++missingJobResponses < 4) continue;
           if (!poll.ok) throw new Error(data.error?.message || 'Unable to check speech job status.');
+          missingJobResponses = 0;
           if (data.data?.status === 'COMPLETED') {
             if (!controller.signal.aborted) setAudioUrl(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}/audio`);
             completed = true;
@@ -540,11 +543,14 @@ export default function VoiceModeInterface({
         const jobId = jobBody.data?.jobId;
         if (!jobId) throw new Error('Audio job was not accepted by the server.');
         setTranscriptionStatus('Audio received · starting speech recognition…');
+        let missingJobResponses = 0;
         for (let attempt = 0; attempt < 120; attempt++) {
           await new Promise((r) => setTimeout(r, 2500));
           const poll = await fetch(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include' });
           const pollData = await poll.json();
+          if (poll.status === 404 && ++missingJobResponses < 4) continue;
           if (!poll.ok) throw new Error(pollData.error?.message || 'Unable to check speech recognition progress.');
+          missingJobResponses = 0;
           const jobStatus = pollData.data?.status;
           const progress = Number(pollData.data?.progress);
           setTranscriptionStatus(jobStatus === 'QUEUED'

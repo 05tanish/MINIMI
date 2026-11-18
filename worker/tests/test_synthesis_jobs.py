@@ -158,6 +158,27 @@ def test_job_updates_retry_conflicts_without_overwriting_processing_status(monke
     assert updated["celeryTaskId"] == "celery-1"
 
 
+@pytest.mark.parametrize("terminal_status", ["COMPLETED", "FAILED", "CANCELLED", "PARTIALLY_COMPLETED"])
+def test_stale_status_update_cannot_overwrite_terminal_job(monkeypatch, terminal_status):
+    key = "minimi:job:job_terminal"
+
+    class Pipeline:
+        def __init__(self):
+            self.value = json.dumps({"jobId": "job_terminal", "status": terminal_status, "progress": 100})
+
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def watch(self, _key): return None
+        def get(self, _key): return self.value
+        def multi(self): raise AssertionError("terminal record must not be rewritten")
+        def reset(self): return None
+
+    monkeypatch.setattr(job_service.redis, "pipeline", Pipeline)
+    updated = job_service.update_job("job_terminal", status="PROCESSING", progress=10)
+    assert updated["status"] == terminal_status
+    assert updated["progress"] == 100
+
+
 def test_celery_failure_is_reflected_in_job_status(monkeypatch):
     item = {"jobId": "job_failed", "userId": "user-1", "status": "QUEUED", "celeryTaskId": "celery-failed"}
     monkeypatch.setattr(jobs, "load_job", lambda _job_id: dict(item))

@@ -6,6 +6,7 @@ from app.config import REDIS_URL
 
 redis = Redis.from_url(REDIS_URL, decode_responses=True)
 logger = logging.getLogger("minimi.worker.jobs")
+TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED", "PARTIALLY_COMPLETED"}
 
 def save_job(job_id: str, data: dict) -> None:
     try:
@@ -37,6 +38,10 @@ def update_job(job_id: str, **updates) -> dict | None:
                         logger.info("Job metadata not found for update", extra={"fields": {"jobId": job_id}})
                         return None
                     current = json.loads(value)
+                    requested_status = updates.get("status")
+                    if current.get("status") in TERMINAL_JOB_STATUSES and requested_status and requested_status != current.get("status"):
+                        logger.info("Ignoring stale terminal job status update", extra={"fields": {"jobId": job_id, "currentStatus": current.get("status"), "requestedStatus": requested_status}})
+                        return current
                     current.update(updates)
                     pipe.multi()
                     pipe.set(key, json.dumps(current), ex=60 * 60 * 24 * 30)

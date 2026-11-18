@@ -27,6 +27,18 @@ afterEach(() => {
 });
 
 describe('worker synthesis routes', () => {
+  it('does not expose a worker transcription endpoint 404 as a missing job', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(404, { detail: 'Job not found' })));
+    const response = await request(app)
+      .post('/api/v1/audio/jobs')
+      .set('Content-Type', 'audio/webm')
+      .set('Idempotency-Key', 'voice-upload-123')
+      .send(Buffer.from('audio'));
+    expect(response.status).toBe(502);
+    expect(response.body.error.code).toBe('WORKER_ENDPOINT_NOT_FOUND');
+    expect(response.body.error.message).not.toContain('Job not found');
+  });
+
   it('returns the worker job ID unchanged for long speech', async () => {
     const fetch = vi.fn().mockResolvedValue(jsonResponse(202, job()));
     vi.stubGlobal('fetch', fetch);

@@ -4,7 +4,7 @@ import { withRetry } from '../../utils/retry.js';
 export async function searchWeb(query, signal) {
   if (!env.TAVILY_API_KEY) throw Object.assign(new Error('Web search is not configured'), { code: 'SEARCH_NOT_CONFIGURED' });
   const response = await withRetry(async () => {
-    const result = await fetch('https://api.tavily.com/search', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ api_key: env.TAVILY_API_KEY, query, search_depth: env.SEARCH_DEPTH, max_results: 5, include_answer: false, include_raw_content: true }) });
+    const result = await fetch('https://api.tavily.com/search', { method: 'POST', signal, headers: { authorization: `Bearer ${env.TAVILY_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ query, search_depth: env.SEARCH_DEPTH, max_results: 5, include_answer: false, include_raw_content: true }) });
     if (!result.ok) {
       const error = Object.assign(new Error(`Search provider returned ${result.status}`), { code: 'SEARCH_FAILED', status: result.status, retryAfter: result.headers.get('retry-after') });
       if (result.status < 500 && result.status !== 429) error.noRetry = true;
@@ -12,8 +12,14 @@ export async function searchWeb(query, signal) {
     }
     return result;
   }, { retries: 2, signal, shouldRetry: (error) => !error.noRetry && (error.status === 429 || error.status >= 500 || error.name === 'TypeError') });
-  const body = await response.json(); const retrievedAt = new Date().toISOString();
-  return (body.results ?? []).map((r) => ({ title: r.title ?? r.url, url: r.url, snippet: r.content ?? '', rawContent: r.raw_content ?? null, publishedAt: r.published_date ?? null, retrievedAt }));
+  let body;
+  try { body = await response.json(); }
+  catch { throw Object.assign(new Error('Search provider returned an invalid response'), { code: 'SEARCH_INVALID_RESPONSE' }); }
+  if (!body || typeof body !== 'object' || !Array.isArray(body.results)) {
+    throw Object.assign(new Error('Search provider returned an invalid response'), { code: 'SEARCH_INVALID_RESPONSE' });
+  }
+  const retrievedAt = new Date().toISOString();
+  return body.results.filter((result) => result && typeof result.url === 'string').map((r) => ({ title: typeof r.title === 'string' ? r.title : r.url, url: r.url, snippet: typeof r.content === 'string' ? r.content : '', rawContent: typeof r.raw_content === 'string' ? r.raw_content : null, publishedAt: typeof r.published_date === 'string' ? r.published_date : null, retrievedAt }));
 }
 export async function searchQueries(queries, signal) {
   const startedAt = Date.now();
