@@ -9,7 +9,7 @@ export async function synthesizeSpeech({ text, language = 'auto', voice = gnaniC
   if (typeof text !== 'string' || !text.trim()) throw Object.assign(new Error('Text is required for speech synthesis.'), { code: 'INVALID_TTS_TEXT' });
   if (!LANGUAGES.has(language)) throw Object.assign(new Error('Unsupported synthesis language.'), { code: 'INVALID_LANGUAGE' });
   if (!V3_VOICES.has(voice)) throw Object.assign(new Error('Unsupported Timbre v3.0 voice.'), { code: 'INVALID_TTS_VOICE' });
-  if (!Number.isFinite(Number(speed)) || Number(speed) < 0.85 || Number(speed) > 1.15) throw Object.assign(new Error('Speech speed must be between 0.85 and 1.15.'), { code: 'INVALID_TTS_SPEED' });
+  if (![0.8, 1, 1.2].includes(Number(speed))) throw Object.assign(new Error('Timbre v3.0 supports speech speeds 0.8, 1.0, and 1.2.'), { code: 'INVALID_TTS_SPEED' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), gnaniConfig.requestTimeoutMs);
   try {

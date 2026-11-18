@@ -13,6 +13,36 @@ const workerUrl = () => process.env.WORKER_INTERNAL_URL?.replace(/\/$/, '');
 const workerSecret = () => process.env.WORKER_INTERNAL_SECRET || '';
 const fail = (res, status, code, message) => res.status(status).json({ success: false, data: null, error: { code, message } });
 
+function workerFailure(response, { notFound = 'job' } = {}) {
+  if (response.status === 404 && notFound === 'endpoint') return { status: 502, code: 'WORKER_ENDPOINT_NOT_FOUND', message: 'Speech service endpoint is unavailable.' };
+  if (response.status === 404 && notFound === 'audio') return { status: 404, code: 'AUDIO_NOT_READY', message: 'Generated audio is not ready.' };
+  if (response.status === 404) return { status: 404, code: 'JOB_NOT_FOUND', message: 'Audio job was not found or has expired.' };
+  if (response.status === 401 || response.status === 403) return { status: 502, code: 'WORKER_AUTH_FAILED', message: 'Speech service authentication failed. Please try again later.' };
+  if (response.status >= 500) return { status: 503, code: 'WORKER_ERROR', message: 'Speech service could not check the job right now.' };
+  return { status: 502, code: 'WORKER_REJECTED', message: 'Speech service rejected the job request.' };
+}
+
+function workerRequestFailure(error) {
+  if (error?.code === 'INVALID_WORKER_RESPONSE') return { status: 502, code: 'INVALID_WORKER_RESPONSE', message: 'Speech service returned an invalid response.' };
+  return error?.name === 'TimeoutError' || error?.name === 'AbortError'
+    ? { status: 504, code: 'WORKER_TIMEOUT', message: 'Speech service took too long to respond.' }
+    : { status: 503, code: 'WORKER_UNAVAILABLE', message: 'Speech service could not be reached.' };
+}
+
+async function readWorkerJson(response) {
+  try {
+    const body = await response.json();
+    if (!body || typeof body !== 'object' || Array.isArray(body) || body.success !== true || !body.data || typeof body.data !== 'object' || Array.isArray(body.data)) throw new Error('Invalid worker response');
+    return body;
+  } catch {
+    throw Object.assign(new Error('Invalid worker response'), { code: 'INVALID_WORKER_RESPONSE' });
+  }
+}
+
+const JOB_STATUSES = new Set(['QUEUED', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED']);
+const TTS_SPEEDS = [0.8, 1, 1.2];
+const normalizeTtsSpeed = (speed = 1) => TTS_SPEEDS.reduce((closest, candidate) => Math.abs(candidate - speed) < Math.abs(closest - speed) ? candidate : closest, 1);
+
 voiceRouter.post('/chat', async (req, res, next) => {
   const parsed = z.object({ conversationId: z.string().optional(), message: z.string().trim().min(1).max(12000) }).safeParse(req.body);
   const key = z.string().trim().min(8).max(120).safeParse(req.get('idempotency-key'));
@@ -77,22 +107,41 @@ voiceRouter.post('/voice/transcribe', audioBody, async (req, res) => {
 
 voiceRouter.post('/voice/synthesize', async (req, res) => {
   if (process.env.ENABLE_TTS === 'false') return fail(res, 503, 'TTS_DISABLED', 'Speech output is disabled.');
-  const parsed = z.object({ text: z.string().trim().min(1).max(30000), language: z.string().optional(), voice: z.string().optional(), speed: z.number().optional() }).safeParse(req.body);
+  const parsed = z.object({ text: z.string().trim().min(1).max(30000), language: z.string().optional(), voice: z.string().optional(), speed: z.number().min(0.8).max(1.2).optional() }).safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'INVALID_REQUEST', 'Provide text up to 30000 characters and valid voice settings.');
   if (parsed.data.text.length > 4000) {
     if (!workerUrl() || !workerSecret()) return fail(res, 503, 'WORKER_UNAVAILABLE', 'Long speech synthesis requires the background worker.');
     try {
-      const response = await fetch(`${workerUrl()}/internal/jobs/synthesis`, { method: 'POST', headers: { 'X-Worker-Secret': workerSecret(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ...parsed.data, userId: req.user.id }), signal: AbortSignal.timeout(5000) });
-      const body = await response.json();
-      if (!response.ok) return fail(res, response.status, 'WORKER_REJECTED', body.detail || 'Worker rejected the synthesis job.');
+      const response = await fetch(`${workerUrl()}/internal/jobs/synthesis`, { method: 'POST', headers: { 'X-Worker-Secret': workerSecret(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ...parsed.data, speed: normalizeTtsSpeed(parsed.data.speed), userId: req.user.id }), signal: AbortSignal.timeout(5000) });
+      if (!response.ok) {
+        const failure = workerFailure(response, { notFound: 'endpoint' });
+        req.log?.warn({ status: response.status, code: failure.code, textLength: parsed.data.text.length }, 'Worker rejected speech synthesis request');
+        return fail(res, failure.status, failure.code, failure.message);
+      }
+      const body = await readWorkerJson(response);
+      const jobId = body.data?.jobId;
+      if (typeof jobId !== 'string' || !jobId || body.data?.status !== 'QUEUED') {
+        req.log?.error({ status: response.status }, 'Worker accepted speech synthesis without returning a job ID');
+        return fail(res, 502, 'INVALID_WORKER_RESPONSE', 'Speech service returned an invalid job response.');
+      }
+      req.log?.info({ jobId, textLength: parsed.data.text.length }, 'Speech synthesis job created');
       return res.status(202).json(body);
-    } catch { return fail(res, 503, 'WORKER_UNAVAILABLE', 'Background speech synthesis could not be reached.'); }
+    } catch (error) {
+      const failure = workerRequestFailure(error);
+      req.log?.warn({ code: failure.code, errorName: error?.name }, 'Speech synthesis worker request failed');
+      return fail(res, failure.status, failure.code, failure.message);
+    }
   }
   try {
-    const result = await synthesizeSpeech(parsed.data);
+    const result = await synthesizeSpeech({ ...parsed.data, speed: normalizeTtsSpeed(parsed.data.speed) });
     res.set({ 'Content-Type': result.contentType, 'Content-Disposition': 'inline; filename="minimi-answer.wav"', 'Cache-Control': 'private, no-store' });
     res.send(result.audio);
-  } catch (error) { fail(res, error.code === 'GNANI_NOT_CONFIGURED' ? 503 : 502, error.code || 'SYNTHESIS_FAILED', error.message || 'Speech synthesis failed.'); }
+  } catch (error) {
+    const status = error.code === 'GNANI_NOT_CONFIGURED' ? 503 : 502;
+    const code = error.code === 'GNANI_NOT_CONFIGURED' ? 'GNANI_NOT_CONFIGURED' : 'SYNTHESIS_FAILED';
+    req.log?.warn({ code, status }, 'Direct speech synthesis failed');
+    fail(res, status, code, status === 503 ? 'Speech synthesis is not configured.' : 'Speech synthesis failed. Please try again.');
+  }
 });
 
 voiceRouter.post('/voice/prepare-answer', async (req, res) => {
@@ -171,25 +220,68 @@ voiceRouter.get('/audio/jobs/:jobId', async (req, res) => {
   if (!workerUrl() || !workerSecret()) return fail(res, 503, 'WORKER_UNAVAILABLE', 'Background audio processing is not configured.');
   try {
     const response = await fetch(`${workerUrl()}/internal/jobs/${encodeURIComponent(req.params.jobId)}`, { headers: { 'X-Worker-Secret': workerSecret() }, signal: AbortSignal.timeout(5000) });
-    const body = await response.json();
-    if (!response.ok) return fail(res, response.status, 'JOB_NOT_FOUND', 'Audio job was not found.');
+    if (!response.ok) {
+      const failure = workerFailure(response);
+      req.log?.warn({ jobId: req.params.jobId, upstreamStatus: response.status, code: failure.code }, 'Speech job status lookup failed');
+      return fail(res, failure.status, failure.code, failure.message);
+    }
+    const body = await readWorkerJson(response);
+    if (body.data.jobId !== req.params.jobId || typeof body.data.userId !== 'string' || !JOB_STATUSES.has(body.data.status)) {
+      req.log?.error({ jobId: req.params.jobId }, 'Worker returned malformed speech job status');
+      return fail(res, 502, 'INVALID_WORKER_RESPONSE', 'Speech service returned an invalid job status.');
+    }
+    req.log?.info({ jobId: req.params.jobId, status: body.data?.status }, 'Speech job status retrieved');
     if (body.data?.userId !== req.user.id) return fail(res, 404, 'NOT_FOUND', 'Audio job was not found.');
     if (body.data?.result?.audioPath) body.data.result.audioPath = undefined;
     res.json(body);
-  } catch { fail(res, 503, 'WORKER_UNAVAILABLE', 'Background audio processing could not be reached.'); }
+  } catch (error) {
+    const failure = workerRequestFailure(error);
+    req.log?.warn({ jobId: req.params.jobId, code: failure.code, errorName: error?.name }, 'Speech job status request failed');
+    fail(res, failure.status, failure.code, failure.message);
+  }
 });
 
 voiceRouter.get('/audio/jobs/:jobId/audio', async (req, res) => {
   if (!workerUrl() || !workerSecret()) return fail(res, 503, 'WORKER_UNAVAILABLE', 'Background audio processing is not configured.');
   try {
     const existing = await fetch(`${workerUrl()}/internal/jobs/${encodeURIComponent(req.params.jobId)}`, { headers: { 'X-Worker-Secret': workerSecret() }, signal: AbortSignal.timeout(5000) });
-    const job = await existing.json();
-    if (!existing.ok || job.data?.userId !== req.user.id || job.data?.type !== 'SYNTHESIS') return fail(res, 404, 'NOT_FOUND', 'Audio result was not found.');
+    if (!existing.ok) {
+      const failure = workerFailure(existing);
+      req.log?.warn({ jobId: req.params.jobId, upstreamStatus: existing.status, code: failure.code }, 'Speech audio ownership lookup failed');
+      return fail(res, failure.status, failure.code, failure.message);
+    }
+    const job = await readWorkerJson(existing);
+    if (job.data.jobId !== req.params.jobId || typeof job.data.userId !== 'string' || typeof job.data.type !== 'string') {
+      req.log?.error({ jobId: req.params.jobId }, 'Worker returned malformed speech job metadata');
+      return fail(res, 502, 'INVALID_WORKER_RESPONSE', 'Speech service returned an invalid audio job.');
+    }
+    if (job.data?.userId !== req.user.id || job.data?.type !== 'SYNTHESIS') return fail(res, 404, 'NOT_FOUND', 'Audio result was not found.');
+    if (!JOB_STATUSES.has(job.data.status)) return fail(res, 502, 'INVALID_WORKER_RESPONSE', 'Speech service returned an invalid audio job status.');
+    if (job.data.status !== 'COMPLETED') return fail(res, 409, 'AUDIO_NOT_READY', 'Generated audio is not ready.');
     const response = await fetch(`${workerUrl()}/internal/jobs/${encodeURIComponent(req.params.jobId)}/audio`, { headers: { 'X-Worker-Secret': workerSecret() }, signal: AbortSignal.timeout(30000) });
-    if (!response.ok) return fail(res, response.status, 'AUDIO_NOT_READY', 'Generated audio is not ready.');
-    res.set({ 'Content-Type': response.headers.get('content-type') || 'audio/wav', 'Cache-Control': 'private, no-store' });
-    res.send(Buffer.from(await response.arrayBuffer()));
-  } catch { fail(res, 503, 'WORKER_UNAVAILABLE', 'Generated audio could not be reached.'); }
+    if (!response.ok) {
+      const failure = workerFailure(response, { notFound: 'audio' });
+      req.log?.warn({ jobId: req.params.jobId, upstreamStatus: response.status, code: failure.code }, 'Speech audio retrieval failed');
+      return fail(res, failure.status, failure.code, failure.message);
+    }
+    const contentType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+    const audio = Buffer.from(await response.arrayBuffer());
+    const validWav = (contentType === 'audio/wav' || contentType === 'audio/x-wav')
+      && audio.length >= 12
+      && audio.subarray(0, 4).toString('ascii') === 'RIFF'
+      && audio.subarray(8, 12).toString('ascii') === 'WAVE';
+    if (!validWav) {
+      req.log?.error({ jobId: req.params.jobId, contentType: contentType || 'missing', byteLength: audio.length }, 'Worker returned invalid speech audio');
+      return fail(res, 502, 'INVALID_AUDIO_RESPONSE', 'Speech service returned invalid audio.');
+    }
+    res.set({ 'Content-Type': contentType, 'Cache-Control': 'private, no-store' });
+    res.send(audio);
+    req.log?.info({ jobId: req.params.jobId }, 'Speech audio retrieved');
+  } catch (error) {
+    const failure = workerRequestFailure(error);
+    req.log?.warn({ jobId: req.params.jobId, code: failure.code, errorName: error?.name }, 'Speech audio retrieval request failed');
+    fail(res, failure.status, failure.code, failure.message);
+  }
 });
 
 voiceRouter.post('/audio/jobs/:jobId/cancel', async (req, res) => {

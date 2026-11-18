@@ -21,6 +21,7 @@
 #   gemini-api-key           → GEMINI_API_KEY
 #   tavily-api-key           → TAVILY_API_KEY
 #   redis-rest-token         → REDIS_REST_TOKEN
+#   gnani-api-key            → GNANI_API_KEY
 #   worker-secret            → WORKER_INTERNAL_SECRET
 # ---------------------------------------------------------------------------
 properties:
@@ -29,6 +30,7 @@ properties:
     activeRevisionsMode: Single
     ingress:
       external: false
+      allowInsecure: false
       targetPort: 3001
       transport: auto
     registries:
@@ -43,6 +45,8 @@ properties:
         value: __SECRET_TAVILY_API_KEY__
       - name: redis-rest-token
         value: __SECRET_REDIS_REST_TOKEN__
+      - name: gnani-api-key
+        value: __SECRET_GNANI_API_KEY__
       - name: worker-secret
         value: __SECRET_WORKER_INTERNAL_SECRET__
   template:
@@ -86,6 +90,8 @@ properties:
             secretRef: gemini-api-key
           - name: TAVILY_API_KEY
             secretRef: tavily-api-key
+          - name: GNANI_API_KEY
+            secretRef: gnani-api-key
         resources:
           cpu: 0.5
           memory: 1.0Gi

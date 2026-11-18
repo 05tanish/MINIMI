@@ -25,8 +25,7 @@
 # The renderer substitutes secret markers below from hidden-input environment
 # variables. Never deploy this template without rendering it first.
 #   redis-url               → REDIS_URL (Upstash rediss:// URL with password)
-# Optional providers are omitted from this baseline template. Add their
-# secret and matching env secretRef only when the provider is enabled.
+# GNANI_API_KEY is required by the queued Timbre synthesis task.
 #
 # Azure Files volume:
 #   Same share as worker-api, mounted at /data/audio.  Celery tasks read
@@ -43,6 +42,8 @@ properties:
     secrets:
       - name: redis-url
         value: __SECRET_UPSTASH_REDIS_TLS_URL__
+      - name: gnani-api-key
+        value: __SECRET_GNANI_API_KEY__
   template:
     containers:
       - name: celery
@@ -66,6 +67,8 @@ properties:
           # --- Storage ---
           - name: WORKER_STORAGE_DIR
             value: /data/audio
+          - name: GNANI_API_KEY
+            secretRef: gnani-api-key
           # --- Audio limits (aligned with worker-api) ---
           - name: MAX_AUDIO_UPLOAD_BYTES
             value: "125829120"
@@ -84,7 +87,7 @@ properties:
             value: "false"
           # --- Gnani STT/TTS provider ---
           - name: GNANI_API_BASE_URL
-            value: https://api.vachana.ai
+            value: "https://api.vachana.ai"
           - name: GNANI_STT_MODEL
             value: prisma-v3.0
           - name: GNANI_TTS_MODEL

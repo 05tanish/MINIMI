@@ -11,9 +11,12 @@ from app.config import MAX_RETRIES, STORAGE_DIR
 from app.services.job_service import update_job
 from app.services.timbre_service import synthesize
 from app.utils.ffmpeg import ffmpeg_executable
+from app.utils.logger import logger
 
 @celery_app.task(bind=True, max_retries=MAX_RETRIES, name="audio.synthesize")
-def synthesize_job(self, job_id: str, text: str, voice: str, language: str):
+def synthesize_job(self, job_id: str, text: str, voice: str, language: str, speed: float = 1):
+    output = STORAGE_DIR / f"{job_id}.wav"
+    logger.info("Speech synthesis task started", extra={"fields": {"jobId": job_id, "textLength": len(text)}})
     update_job(job_id, status="PROCESSING", progress=10, startedAt=datetime.now(timezone.utc).isoformat())
     try:
         paragraphs = [part.strip() for part in text.splitlines() if part.strip()]
@@ -43,7 +46,7 @@ def synthesize_job(self, job_id: str, text: str, voice: str, language: str):
         for index, chunk in enumerate(chunks):
             for attempt in range(MAX_RETRIES + 1):
                 try:
-                    audio = synthesize(chunk, voice, language)
+                    audio = synthesize(chunk, voice, language, speed)
                     break
                 except requests.RequestException as exc:
                     status = exc.response.status_code if isinstance(exc, requests.HTTPError) and exc.response is not None else 0
@@ -53,15 +56,19 @@ def synthesize_job(self, job_id: str, text: str, voice: str, language: str):
                     time.sleep(min(8, 2 ** attempt) + random.uniform(0, 0.5))
             (directory / f"part-{index:04d}.wav").write_bytes(audio)
             update_job(job_id, progress=min(90, int((index + 1) / len(chunks) * 90)))
-        output = STORAGE_DIR / f"{job_id}.wav"
         listing = directory / "parts.txt"
         listing.write_text("".join(f"file '{directory / f'part-{index:04d}.wav'}'\n" for index in range(len(chunks))))
         subprocess.run([ffmpeg_executable(), "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(output)], capture_output=True, timeout=180, check=True)
         result = {"audioPath": str(output)}
         update_job(job_id, status="COMPLETED", progress=100, result=result, completedAt=datetime.now(timezone.utc).isoformat())
         shutil.rmtree(directory, ignore_errors=True)
+        logger.info("Speech synthesis task completed", extra={"fields": {"jobId": job_id, "chunkCount": len(chunks)}})
         return result
-    except Exception:
-        update_job(job_id, status="FAILED", error={"category": "SYNTHESIS_FAILED"}, completedAt=datetime.now(timezone.utc).isoformat())
-        shutil.rmtree(STORAGE_DIR / job_id, ignore_errors=True)
+    except Exception as exc:
+        logger.exception("Speech synthesis task failed", extra={"fields": {"jobId": job_id, "errorType": type(exc).__name__}})
+        try:
+            update_job(job_id, status="FAILED", error={"category": "SYNTHESIS_FAILED"}, completedAt=datetime.now(timezone.utc).isoformat())
+        finally:
+            shutil.rmtree(STORAGE_DIR / job_id, ignore_errors=True)
+            output.unlink(missing_ok=True)
         raise

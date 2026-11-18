@@ -35,8 +35,16 @@ describe('isolated Gnani adapters', () => {
     const result = await synthesizeSpeech({ text: 'नमस्ते', language: 'hi-IN', voice: 'Shivani' });
     const payload = JSON.parse(fetch.mock.calls[0][1].body);
     expect(fetch.mock.calls[0][0]).toBe('https://api.vachana.ai/api/v1/tts/inference');
-    expect(payload).toMatchObject({ model: 'timbre-v3.0', voice: 'Shivani', language: 'hi-IN', audio_config: { container: 'wav', sample_rate: 48000 } });
+    expect(payload).toMatchObject({ model: 'timbre-v3.0', voice: 'Shivani', language: 'hi-IN', speed: 1, audio_config: { container: 'wav', sample_rate: 48000 } });
     expect(result.audio).toEqual(Buffer.from([1, 2, 3]));
+  });
+
+  it('rejects unsupported Timbre v3.0 speeds before the provider call', async () => {
+    vi.stubEnv('GNANI_API_KEY', 'test-key');
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    const { synthesizeSpeech } = await import('../../server/src/integrations/gnani/timbre.client.js');
+    await expect(synthesizeSpeech({ text: 'Hello', speed: 1.05 })).rejects.toMatchObject({ code: 'INVALID_TTS_SPEED' });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('does not call an undocumented Evon endpoint and labels the existing provider fallback', async () => {

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import AudioWaveform from './AudioWaveform.jsx';
 import VoicePlaybackControls from './VoicePlaybackControls.jsx';
-import VoiceSettings from './VoiceSettings.jsx';
+import VoiceSettings, { normalizeTtsSpeed } from './VoiceSettings.jsx';
 
 const VoiceOrb = lazy(() => import('./VoiceOrb.jsx'));
 
@@ -55,6 +55,21 @@ function finalizeSpokenAnswer(text) {
   return concise && !/(?:if you(?:’|'| )d like|want me to expand|happy to explain more)\.?$/i.test(concise)
     ? `${concise.replace(/[\s.!?]+$/, '')}. I can go deeper on any of those if you’d like.`
     : concise;
+}
+
+function waitForPollInterval(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Speech polling was cancelled.', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function VoiceAnswerContent({ message }) {
@@ -350,7 +365,7 @@ export default function VoiceModeInterface({
           text: cleanText.slice(0, 30000),
           language: voiceSettings.language === 'indic-auto' ? 'auto' : voiceSettings.language,
           voice: voiceSettings.voice || 'Shivani',
-          speed: voiceSettings.speed || 1
+          speed: normalizeTtsSpeed(voiceSettings.speed)
         }),
         signal: controller.signal
       });
@@ -369,23 +384,41 @@ export default function VoiceModeInterface({
         const jobId = body.data?.jobId;
         if (!jobId) throw new Error('Speech job was not accepted.');
         let completed = false;
-        for (let attempt = 0; attempt < 120; attempt++) {
-          await new Promise((r) => setTimeout(r, 2000));
-          const poll = await fetch(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include', signal: controller.signal });
-          const data = await poll.json();
+        const pollDeadline = Date.now() + 4 * 60 * 1000;
+        while (Date.now() < pollDeadline) {
+          await waitForPollInterval(2000, controller.signal);
+          const pollSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
+          const poll = await fetch(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include', signal: pollSignal });
+          const data = await poll.json().catch(() => null);
+          if (!data || typeof data !== 'object') throw new Error('Speech service returned an invalid job status.');
           if (!poll.ok) throw new Error(data.error?.message || 'Unable to check speech job status.');
           if (data.data?.status === 'COMPLETED') {
             if (!controller.signal.aborted) setAudioUrl(`/api/v1/audio/jobs/${encodeURIComponent(jobId)}/audio`);
             completed = true;
             break;
           }
-          if (['FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED'].includes(data.data?.status)) throw new Error('Speech generation did not complete.');
+          if (['FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED'].includes(data.data?.status)) {
+            const category = data.data?.error?.category;
+            const messages = {
+              SYNTHESIS_FAILED: 'The speech provider could not generate this response.',
+              CELERY_TASK_FAILED: 'The background speech worker stopped before audio was ready.'
+            };
+            throw new Error(messages[category] || (data.data?.status === 'CANCELLED' ? 'Speech generation was cancelled.' : 'Speech generation did not complete.'));
+          }
+          if (!['QUEUED', 'PROCESSING'].includes(data.data?.status)) throw new Error('Speech service returned an unknown job status.');
         }
         if (!completed) throw new Error('Speech generation is taking longer than expected.');
       }
     } catch (cause) {
       if (controller.signal.aborted) return;
-      setAudioError(`Timbre voice generation failed: ${cause.message || 'the audio service is unavailable'}. Retry to hear your selected voice.`);
+      const message = cause.name === 'TimeoutError'
+        ? 'Speech status checks timed out.'
+        : cause.name === 'SyntaxError'
+          ? 'Speech service returned an invalid response.'
+        : cause.name === 'TypeError'
+          ? 'Speech service could not be reached.'
+          : cause.message || 'The audio service is unavailable.';
+      setAudioError(`Timbre voice generation failed: ${message} Retry to hear your selected voice.`);
     } finally {
       if (synthesisControllerRef.current === controller) setSynthesizing(false);
     }

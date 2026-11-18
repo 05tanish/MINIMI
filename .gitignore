@@ -83,3 +83,6 @@ Thumbs.db
 *.tmp
 *.swp
 *.bak
+
+# Generated Azure YAML (contains secrets)
+azure/rendered/

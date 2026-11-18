@@ -20,8 +20,8 @@
 # variables. Never deploy this template without rendering it first.
 #   worker-secret           → WORKER_INTERNAL_SECRET
 #   redis-url               → REDIS_URL (Upstash rediss:// URL with password)
-# Optional providers are omitted from this baseline template. Add their
-# secret and matching env secretRef only when the provider is enabled.
+# GNANI_API_KEY is passed to the gateway for consistency with the Celery
+# synthesis task and must use the same provider credential in both containers.
 #
 # Azure Files volume:
 #   The volume name "audio-volume" references storageName "minimi-audio",
@@ -35,6 +35,7 @@ properties:
     activeRevisionsMode: Single
     ingress:
       external: false
+      allowInsecure: false
       targetPort: 8000
       transport: auto
     registries:
@@ -45,6 +46,8 @@ properties:
         value: __SECRET_WORKER_INTERNAL_SECRET__
       - name: redis-url
         value: __SECRET_UPSTASH_REDIS_TLS_URL__
+      - name: gnani-api-key
+        value: __SECRET_GNANI_API_KEY__
   template:
     containers:
       - name: worker-api
@@ -60,6 +63,8 @@ properties:
           # --- Shared internal secret ---
           - name: WORKER_INTERNAL_SECRET
             secretRef: worker-secret
+          - name: GNANI_API_KEY
+            secretRef: gnani-api-key
           # --- Storage ---
           - name: WORKER_STORAGE_DIR
             value: /data/audio
@@ -84,7 +89,7 @@ properties:
             value: "false"
           # --- Gnani STT/TTS provider ---
           - name: GNANI_API_BASE_URL
-            value: https://api.vachana.ai
+            value: "https://api.vachana.ai"
           - name: GNANI_STT_MODEL
             value: prisma-v3.0
           - name: GNANI_TTS_MODEL

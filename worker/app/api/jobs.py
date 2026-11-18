@@ -12,6 +12,7 @@ from app.tasks.transcription import transcribe_job
 from app.tasks.speech_synthesis import synthesize_job
 from app.utils.ffmpeg import ffmpeg_executable
 from app.utils.validators import inspect_audio
+from app.utils.logger import logger
 
 router = APIRouter()
 
@@ -99,12 +100,19 @@ async def create_transcription(user_id: str = Form(...), conversation_id: str | 
 @router.post("/internal/jobs/synthesis", dependencies=[Depends(authenticate)])
 async def create_synthesis(payload: dict):
     user_id, text = payload.get("userId"), payload.get("text")
-    if not user_id or not isinstance(text, str) or not text.strip() or len(text) > 20000:
+    speed = payload.get("speed", 1)
+    if not user_id or not isinstance(text, str) or not text.strip() or len(text) > 30000 or isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed not in {0.8, 1, 1.2}:
         raise HTTPException(status_code=400, detail="Invalid synthesis request")
     job_id = f"job_{uuid.uuid4().hex}"
-    save_job(job_id, {"jobId": job_id, "celeryTaskId": None, "userId": user_id, "conversationId": payload.get("conversationId"), "type": "SYNTHESIS", "status": "QUEUED", "progress": 0, "createdAt": datetime.now(timezone.utc).isoformat(), "result": None, "error": None})
-    task = synthesize_job.delay(job_id, text, payload.get("voice", "Shivani"), payload.get("language", "auto"))
-    update_job(job_id, celeryTaskId=task.id)
+    task_id = uuid.uuid4().hex
+    save_job(job_id, {"jobId": job_id, "celeryTaskId": task_id, "userId": user_id, "conversationId": payload.get("conversationId"), "type": "SYNTHESIS", "status": "QUEUED", "progress": 0, "createdAt": datetime.now(timezone.utc).isoformat(), "result": None, "error": None})
+    try:
+        task = synthesize_job.apply_async(args=(job_id, text, payload.get("voice", "Shivani"), payload.get("language", "auto"), speed), task_id=task_id)
+    except Exception as exc:
+        logger.exception("Speech synthesis task could not be queued", extra={"fields": {"jobId": job_id, "errorType": type(exc).__name__}})
+        update_job(job_id, status="FAILED", error={"category": "CELERY_ENQUEUE_FAILED"}, completedAt=datetime.now(timezone.utc).isoformat())
+        raise HTTPException(status_code=503, detail="Speech worker could not queue this job") from exc
+    logger.info("Speech synthesis job queued", extra={"fields": {"jobId": job_id, "userId": user_id, "textLength": len(text), "celeryTaskId": task.id}})
     return {"success": True, "data": {"jobId": job_id, "status": "QUEUED", "progress": 0}, "error": None}
 
 @router.get("/internal/jobs/{job_id}", dependencies=[Depends(authenticate)])
@@ -113,7 +121,11 @@ def get_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     task = AsyncResult(job["celeryTaskId"], app=celery_app) if job.get("celeryTaskId") else None
-    if task.state == "PENDING" and job["status"] == "QUEUED":
+    if task and task.state == "FAILURE" and job.get("status") not in {"FAILED", "CANCELLED", "COMPLETED"}:
+        logger.error("Celery task failed before job completion was recorded", extra={"fields": {"jobId": job_id, "celeryTaskId": job["celeryTaskId"]}})
+        update_job(job_id, status="FAILED", error={"category": "CELERY_TASK_FAILED"}, completedAt=datetime.now(timezone.utc).isoformat())
+        job = load_job(job_id) or job
+    if task and task.state == "PENDING" and job["status"] == "QUEUED":
         job["status"] = "QUEUED"
     return {"success": True, "data": job, "error": None}
 
@@ -130,8 +142,10 @@ def cancel_job(job_id: str):
 def get_audio(job_id: str):
     job = load_job(job_id)
     if not job or job.get("status") != "COMPLETED" or not job.get("result", {}).get("audioPath"):
+        logger.info("Speech audio is not available", extra={"fields": {"jobId": job_id, "status": job.get("status") if job else "MISSING"}})
         raise HTTPException(status_code=404, detail="Audio result not found")
     path = Path(job["result"]["audioPath"])
     if not path.is_file() or path.parent != STORAGE_DIR:
         raise HTTPException(status_code=404, detail="Audio result not found")
+    logger.info("Speech audio requested", extra={"fields": {"jobId": job_id}})
     return FileResponse(path, media_type="audio/wav", filename=f"{job_id}.wav")
