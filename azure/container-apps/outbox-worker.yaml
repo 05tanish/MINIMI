@@ -26,6 +26,7 @@
 # variables. Never deploy this template without rendering it first.
 #   database-url            → DATABASE_URL
 #   gemini-api-key           → GEMINI_API_KEY
+#   groq-api-key              → GROQ_API_KEY
 #   tavily-api-key           → TAVILY_API_KEY
 #   worker-secret            → WORKER_INTERNAL_SECRET
 # ---------------------------------------------------------------------------
@@ -41,6 +42,8 @@ properties:
         value: __SECRET_DATABASE_URL__
       - name: gemini-api-key
         value: __SECRET_GEMINI_API_KEY__
+      - name: groq-api-key
+        value: __SECRET_GROQ_API_KEY__
       - name: tavily-api-key
         value: __SECRET_TAVILY_API_KEY__
       - name: worker-secret
@@ -75,6 +78,8 @@ properties:
             secretRef: database-url
           - name: GEMINI_API_KEY
             secretRef: gemini-api-key
+          - name: GROQ_API_KEY
+            secretRef: groq-api-key
           - name: TAVILY_API_KEY
             secretRef: tavily-api-key
         resources:

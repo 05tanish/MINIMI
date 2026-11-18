@@ -176,7 +176,6 @@ async function poll() {
 export function startMemoryIndexer() {
   if (!prisma || timer || stopping) return;
   timer = setInterval(() => void poll(), 1500);
-  timer.unref();
   void poll();
   logger.info('Memory indexer worker started');
 }

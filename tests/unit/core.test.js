@@ -85,15 +85,43 @@ describe('Groq provider adapter', () => {
 });
 
 describe('answer fallback', () => {
-  it('returns retrieved history and cited web evidence when language models are unavailable', () => {
-    const answer = buildEvidenceFallback('What changed?', [{ content: 'We discussed a $20 plan.' }], [{ id: 'S1', title: 'Pricing', snippet: 'The plan costs $25 per month.' }]);
-    expect(answer).toContain('We discussed a $20 plan.');
+  it('keeps retrieved material visibly separate from verified research', () => {
+    const answer = buildEvidenceFallback('What changed about CRM pricing?', [{ content: 'We discussed CRM pricing before, but did not choose a vendor.' }], [{ id: 'S1', title: 'CRM pricing', snippet: 'The plan costs $25 per month.' }]);
+    expect(answer).toContain('We discussed CRM pricing before');
     expect(answer).toContain('The plan costs $25 per month. [S1]');
-    expect(answer).toContain('## Research summary');
-    expect(answer).toContain('### Current web evidence');
-    expect(answer).toContain('not a synthesized conclusion');
+    expect(answer).toContain('## Answer unavailable');
+    expect(answer).toContain('Retrieved conversation history (unverified context)');
+    expect(answer).toContain('Retrieved web material (not independently verified)');
+    expect(answer).toContain('not verified research');
   });
-  it('returns a clear retry message when there is no evidence', () => {
+  it('does not present the original query or an earlier unavailable response as useful history', () => {
+    const answer = buildEvidenceFallback('types of CRM and ERP tools', [
+      { content: 'User: types of CRM and ERP tools' },
+      { content: 'Minimi: Research unavailable. I couldn’t retrieve conversation history or web sources; please try again shortly.' }
+    ]);
+    expect(answer).toContain('Please try again shortly.');
+    expect(answer).not.toContain('Retrieved conversation history');
+    expect(answer).not.toContain('Research unavailable. I couldn’t retrieve');
+  });
+  it('drops irrelevant history and sources when search is unavailable', () => {
+    const answer = buildEvidenceFallback('types of CRM and ERP tools', [
+      { content: 'We discussed vacation plans and hotel options for the summer.' }
+    ], []);
+    expect(answer).toContain('Please try again shortly.');
+    expect(answer).not.toContain('vacation');
+    expect(answer).not.toContain('Retrieved conversation history');
+  });
+  it('labels matching conversation history as context when web search returned nothing', () => {
+    const answer = buildEvidenceFallback('CRM tools we discussed', [
+      { content: 'We compared CRM tools last week and shortlisted two options for customer support.' }
+    ], []);
+    expect(answer).toContain('Retrieved conversation history (unverified context)');
+    expect(answer).toContain('We compared CRM tools last week');
+    expect(answer).not.toContain('Retrieved web material');
+    expect(answer).toContain('not verified research');
+  });
+  it('returns a clear retry message when retrieved evidence is empty or irrelevant', () => {
+    expect(buildEvidenceFallback('types of CRM and ERP tools', [], [{ id: 'S1', title: 'Weather', snippet: 'Rain is expected tomorrow.' }])).toContain('Please try again shortly.');
     expect(buildEvidenceFallback('Question?')).toContain('Please try again shortly.');
   });
 });

@@ -162,25 +162,43 @@ function fitContextItems(items, tokenBudget, formatter) {
 
 export function buildEvidenceFallback(query, history = [], sources = []) {
   const sections = [];
-  const lead = `## Research summary\n\nI couldn’t generate a full synthesis for **${query}** because the answer providers are temporarily unavailable. Here is the retrieved evidence, organized by source.`;
+  const lead = `## Answer unavailable\n\nI couldn’t synthesize an answer for **${query}** because the answer providers are temporarily unavailable. Any material below is retrieved context only; it is not verified research or a conclusion.`;
   if (history.length) {
     const seen = new Set();
-    const relevant = history.slice(0, 6).map((item) => cleanEvidenceText(item.content)).filter((item) => {
-      if (!item || /there is no information available to answer|could not produce an answer/i.test(item)) return false;
+    const relevant = history.map((item) => cleanEvidenceText(item.content)).filter((item) => {
+      if (!item || item.length < 35 || isUnavailableMessage(item) || isSameQuestion(item, query) || !hasQueryOverlap(item, query)) return false;
       const key = item.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true;
     }).slice(0, 3);
-    if (relevant.length) sections.push(`### From your conversation history\n\n${relevant.map((item) => `- ${item}`).join('\n')}`);
+    if (relevant.length) sections.push(`### Retrieved conversation history (unverified context)\n\n${relevant.map((item) => `- ${item}`).join('\n')}`);
   }
   if (sources.length) {
-    const findings = sources.slice(0, 5).map((source) => {
+    const findings = sources.filter((source) => hasQueryOverlap(`${source.title} ${source.snippet || source.extractedContent || ''}`, query)).slice(0, 5).map((source) => {
       const excerpt = cleanEvidenceText(source.snippet || source.extractedContent).slice(0, 350);
       return `- **${source.title}** — ${excerpt || 'No extractable summary was available.'} [${source.id}]`;
     });
-    sections.push(`### Current web evidence\n\n${findings.join('\n')}`);
+    if (findings.length) sections.push(`### Retrieved web material (not independently verified)\n\n${findings.join('\n')}`);
   }
   if (!sections.length) return `## Research unavailable\n\nI couldn’t retrieve conversation history or web sources for **${query}**, and the answer providers are temporarily unavailable. Please try again shortly.`;
-  sections.push('---\n\n*This is retrieved evidence, not a synthesized conclusion. Open the cited sources to review the full context.*');
+  sections.push('---\n\n*This is retrieved material only. It has not been checked or synthesized into an answer.*');
   return `${lead}\n\n${sections.join('\n\n')}`;
+}
+
+const fallbackStopWords = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'what', 'which', 'types', 'type', 'tools', 'tool', 'about', 'into', 'your', 'are', 'was', 'were', 'have', 'has', 'how']);
+function queryTerms(value) {
+  return new Set((String(value).toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((term) => !fallbackStopWords.has(term)));
+}
+function hasQueryOverlap(text, query) {
+  const terms = queryTerms(query);
+  if (!terms.size) return false;
+  const evidence = queryTerms(text);
+  return [...terms].some((term) => evidence.has(term));
+}
+function isSameQuestion(text, query) {
+  const normalized = (value) => String(value).replace(/^(?:user|minimi):\s*/i, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  return normalized(text) === normalized(query);
+}
+function isUnavailableMessage(text) {
+  return /(?:research unavailable|answer service is temporarily unavailable|answer providers are temporarily unavailable|couldn.t generate (?:a full )?synthesis|research time budget was exceeded|please try again shortly)/i.test(text);
 }
 
 function cleanEvidenceText(value = '') {
